@@ -1,0 +1,33 @@
+[project]
+name = "project-status-monitor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "openai>=3.19.2",
+    "pillow>=12.3.0",
+    "pypdfium2>=5.13.0",
+    "python-dotenv>=1.2.3",
+    "streamlit>=1.64.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/psm"]

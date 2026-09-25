@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# venv
+.venv/
+venv/
+
+# secrets
+.env
+.env.*
+!.env.example
+
+# data
+data/
+eval/final/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# logs
+logs/*.log
+logs/*.log.*
+!logs/.gitkeep
+
+# graphify
+graphify-out/
+
+# cache
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# editor/OS
+.vscode/
+.idea/
+.DS_Store
+
+# claude
+CLAUDE.md
+docs/기획서.md
