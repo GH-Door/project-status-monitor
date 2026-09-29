@@ -107,6 +107,20 @@
 
 ## 🛠️ Installation
 
+### Docker (권장 — Windows 등 로컬 Python/uv 세팅 없이 실행)
+
+```bash
+cp .env.example .env 
+docker compose up --build
+```
+
+- 브라우저에서 http://localhost:8501 접속
+- 테스트: `docker compose run --rm app pytest`
+- 린트: `docker compose run --rm app ruff check`
+- `pyproject.toml`/`uv.lock` 변경 후에는 `docker compose build` 다시 실행
+
+### Local (uv)
+
 ```bash
 uv sync
 cp .env.example .env   # OPENAI_API_KEY, DIFY_API_BASE, DIFY_DATASET_API_KEY 입력

@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # 컨테이너 안의 localhost는 호스트가 아님 — 호스트에서 도는 Dify로 연결
+      DIFY_API_BASE: ${DIFY_API_BASE_DOCKER:-http://host.docker.internal/v1}
+      # Windows 바인드 마운트는 inotify 이벤트가 안 와서 자동 리로드가 안 됨 → polling
+      STREAMLIT_SERVER_FILE_WATCHER_TYPE: poll
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # Linux 호스트에서도 동작하게
+    volumes:
+      - .:/app # 코드 수정 즉시 반영 + data/·logs/ 호스트에 보존

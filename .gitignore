@@ -47,3 +47,6 @@ htmlcov/
 # claude
 CLAUDE.md
 docs/기획서.md
+
+# tasks
+tasks/
