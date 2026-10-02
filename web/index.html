@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AICHEMIST 사업 현황</title>
+  <link rel="icon" href="/brand/logo.png">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip" href="#view">본문으로 건너뛰기</a>
+  <div class="shell">
+    <aside class="side">
+      <a class="logo-link" id="home" href="#/dashboard" aria-label="AIchemist 사업 현황 — 대시보드로 이동"><img class="logo" src="/brand/logo.png" alt=""></a>
+      <div class="company-name" id="company-name" aria-live="polite"></div>
+      <nav aria-label="주 메뉴" id="nav"></nav>
+      <p class="side-note">진척률은 사람이 승인한 값으로만 계산해요. 문서에서 읽은 지표는 원문에 있는 값만 보여줘요.</p>
+    </aside>
+    <div class="main">
+      <header class="top">
+        <h1 id="title">대시보드</h1>
+        <div class="top-tools">
+          <label class="inline">기준일
+            <input type="date" id="asof">
+          </label>
+          <button type="button" class="btn ghost" id="asof-doc" title="자료 묶음의 기준시점(2026-10-01)으로 맞춥니다">문서 기준일</button>
+          <button type="button" class="btn primary" id="sync">폴더 동기화</button>
+        </div>
+      </header>
+      <main id="view" tabindex="-1"></main>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="dialog"></dialog>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
