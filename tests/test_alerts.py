@@ -100,3 +100,9 @@ def test_healthy_project_has_no_alerts():
         )
     ]
     assert evaluate_alerts(_project(), milestones, TODAY) == []
+
+
+def test_info_missing_alert_names_exactly_what_is_missing():
+    alerts = evaluate_alerts(_project(goal=None, has_active_baseline=False), [], TODAY)
+
+    assert alerts[0].reason == "입력이 필요한 항목: 목표(방향), 기준선"

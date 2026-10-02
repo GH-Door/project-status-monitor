@@ -153,3 +153,109 @@ def test_llm_failure_cancels_reservation_and_abstains(conn, monkeypatch):
         "SELECT COUNT(*) FROM api_usage WHERE status = 'reserved'"
     ).fetchone()[0]
     assert ratio == 0  # 실패한 예약은 취소돼 남아 있지 않아야 한다
+
+
+def _two_docs(conn):
+    _seed_project(conn)
+    _seed_asset(conn, asset_id=10, project_id=1)  # document 10
+    _seed_asset(conn, asset_id=11, project_id=1)  # document 11
+
+
+def test_selected_documents_are_passed_to_dify_as_asset_names(conn, monkeypatch):
+    _two_docs(conn)
+    seen = {}
+
+    def _retrieve(dataset_id, query, top_k, document_names=None):
+        seen["names"] = document_names
+        return [_hit(10)]
+
+    monkeypatch.setattr(rag.dify, "retrieve", _retrieve)
+
+    evidence = rag.retrieve_evidence(conn, 1, "ds", "질문", document_ids=[10])
+
+    assert seen["names"] == ["asset:10"]
+    assert [e.asset_id for e in evidence] == [10]
+
+
+def test_hit_from_unselected_document_is_dropped_even_if_dify_returns_it(conn, monkeypatch):
+    """Dify 필터가 무시되거나 잘못 동작해도 서버가 선택 문서만 근거로 인정한다."""
+    _two_docs(conn)
+    monkeypatch.setattr(rag.dify, "retrieve", lambda *a, **k: [_hit(10), _hit(11)])
+
+    evidence = rag.retrieve_evidence(conn, 1, "ds", "질문", document_ids=[10])
+
+    assert [e.asset_id for e in evidence] == [10]
+
+
+def test_selected_documents_without_indexed_assets_skip_retrieval(conn, monkeypatch):
+    _seed_project(conn)
+    _seed_asset(conn, asset_id=10, project_id=1, status="error_retry")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("색인된 자산이 없으면 검색하지 않는다")
+
+    monkeypatch.setattr(rag.dify, "retrieve", _boom)
+
+    assert rag.retrieve_evidence(conn, 1, "ds", "질문", document_ids=[10]) == []
+
+
+def test_no_selection_searches_whole_project(conn, monkeypatch):
+    _two_docs(conn)
+    seen = {}
+
+    def _retrieve(dataset_id, query, top_k, document_names=None):
+        seen["names"] = document_names
+        return [_hit(10), _hit(11)]
+
+    monkeypatch.setattr(rag.dify, "retrieve", _retrieve)
+
+    evidence = rag.retrieve_evidence(conn, 1, "ds", "질문")
+
+    assert seen["names"] is None
+    assert {e.asset_id for e in evidence} == {10, 11}
+
+
+def test_answer_without_any_cited_evidence_is_held_back(conn, monkeypatch):
+    """모델이 abstain=false인데 인용을 비워 오면 근거 없는 답변이다 — 유보해야 한다."""
+    _seed_project(conn)
+    _seed_asset(conn, asset_id=1, project_id=1)
+    monkeypatch.setattr(rag.dify, "retrieve", lambda *a, **k: [_hit(1)])
+    monkeypatch.setattr(rag.llm, "answer", lambda *a, **k: _stub_answer([]))
+
+    result = rag.answer_question(conn, 1, 1, "ds", "질문")
+
+    assert result.abstained and not result.errored
+
+
+def test_generation_failure_is_marked_as_error_not_as_a_plain_hold(conn, monkeypatch):
+    _seed_project(conn)
+    _seed_asset(conn, asset_id=1, project_id=1)
+    monkeypatch.setattr(rag.dify, "retrieve", lambda *a, **k: [_hit(1)])
+
+    def _boom(*a, **k):
+        raise RuntimeError("openai down")
+
+    monkeypatch.setattr(rag.llm, "answer", _boom)
+
+    result = rag.answer_question(conn, 1, 1, "ds", "질문")
+
+    assert result.abstained and result.errored
+
+
+def test_document_selection_asks_dify_for_more_candidates(conn, monkeypatch):
+    """Dify가 필터를 무시해도 선택 문서의 근거가 상위 결과에서 밀려나지 않도록 넉넉히 가져온다."""
+    _seed_project(conn)
+    _seed_asset(conn, asset_id=10, project_id=1)
+    seen = {}
+
+    def _retrieve(dataset_id, query, top_k, document_names=None):
+        seen["top_k"] = top_k
+        return []
+
+    monkeypatch.setattr(rag.dify, "retrieve", _retrieve)
+
+    rag.retrieve_evidence(conn, 1, "ds", "질문")
+    default_k = seen["top_k"]
+    rag.retrieve_evidence(conn, 1, "ds", "질문", document_ids=[10])
+
+    assert seen["top_k"] > default_k

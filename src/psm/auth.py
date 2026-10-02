@@ -43,3 +43,20 @@ def require_project_access(
         raise AccessDeniedError(f"user {user_id}는 project {project_id}에 접근 권한이 없습니다")
     if action == "approve" and member["role"] != "owner":
         raise AccessDeniedError("승인 권한이 없습니다 (owner만 가능)")
+
+
+DEMO_USERNAME = "demo_admin"
+
+
+def demo_user_id(conn: sqlite3.Connection) -> int:
+    """로그인 없이 쓰는 데모 관리자(팀장 피드백). 없으면 만든다. 서버측 권한 검사는 그대로 거친다."""
+    row = conn.execute("SELECT id FROM users WHERE username = ?", (DEMO_USERNAME,)).fetchone()
+    if row is not None:
+        return row["id"]
+    cursor = conn.execute(
+        "INSERT INTO users (username, password_hash, display_name, is_admin) "
+        "VALUES (?, '!', '데모 관리자', 1)",
+        (DEMO_USERNAME,),
+    )
+    conn.commit()
+    return cursor.lastrowid

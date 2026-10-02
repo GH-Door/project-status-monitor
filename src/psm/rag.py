@@ -18,6 +18,8 @@ from psm.models import EvidenceItem
 
 logger = get_logger("rag")
 
+_SELECTED_FETCH_FACTOR = 10
+
 
 @dataclass(frozen=True)
 class Answer:
@@ -25,10 +27,11 @@ class Answer:
     evidence: list[EvidenceItem]
     abstained: bool
     abstain_reason: str | None = None
+    errored: bool = False  # 근거 부족이 아니라 장애(생성 실패 등)로 답하지 못한 경우
 
     @classmethod
-    def abstain(cls, reason: str) -> Answer:
-        return cls(text="", evidence=[], abstained=True, abstain_reason=reason)
+    def abstain(cls, reason: str, errored: bool = False) -> Answer:
+        return cls(text="", evidence=[], abstained=True, abstain_reason=reason, errored=errored)
 
 
 def _official_values(conn: sqlite3.Connection, project_id: int) -> dict:
@@ -39,7 +42,10 @@ def _official_values(conn: sqlite3.Connection, project_id: int) -> dict:
 
 
 def _verified_unique_evidence(
-    conn: sqlite3.Connection, project_id: int, hits: list[dict]
+    conn: sqlite3.Connection,
+    project_id: int,
+    hits: list[dict],
+    document_ids: list[int] | None = None,
 ) -> list[EvidenceItem]:
     """검색 결과를 서버 DB와 대조: 이 사업 소속·색인 완료 상태인 자산만, 중복 페이지는 병합한다.
 
@@ -63,6 +69,8 @@ def _verified_unique_evidence(
         ).fetchone()
         if row is None or row["project_id"] != project_id or row["status"] != "indexed":
             continue
+        if document_ids is not None and row["document_id"] not in document_ids:
+            continue  # 사용자가 고른 문서 밖의 근거는 Dify가 돌려줘도 버린다
 
         dedup_key = f"{row['document_id']}:{row['page_number']}" if row["kind"] == "page" else f"img:{row['id']}"
         content = hit["content"]
@@ -85,18 +93,58 @@ def _verified_unique_evidence(
     return [evidence_by_key[key] for key in order]
 
 
+def _selected_asset_names(
+    conn: sqlite3.Connection, project_id: int, document_ids: list[int]
+) -> list[str]:
+    """선택 문서의 색인 완료 자산을 Dify 문서명("asset:{id}")으로 바꾼다. 이 사업 소속만."""
+    marks = ",".join("?" * len(document_ids))
+    rows = conn.execute(
+        f"SELECT id FROM assets WHERE project_id = ? AND status = 'indexed' "
+        f"AND document_id IN ({marks})",
+        (project_id, *document_ids),
+    ).fetchall()
+    return [f"asset:{row['id']}" for row in rows]
+
+
+def retrieve_evidence(
+    conn: sqlite3.Connection,
+    project_id: int,
+    dataset_id: str,
+    question: str,
+    document_ids: list[int] | None = None,
+) -> list[EvidenceItem]:
+    """검색 + 서버 DB 대조 + 중복 병합 후 top-K 근거. 생성 없이 검색 품질만 볼 때(평가)도 쓴다.
+
+    document_ids를 주면 그 문서 안에서만 찾는다(비어 있으면 사업 전체).
+    """
+    names = None
+    if document_ids:
+        names = _selected_asset_names(conn, project_id, document_ids)
+        if not names:
+            return []  # 고른 문서가 아직 색인되지 않았다
+    # 문서를 골랐을 때는 Dify가 필터를 무시해도 선택 문서의 근거가 밀려나지 않게 넉넉히 가져온다.
+    fetch_k = TOP_K * (_SELECTED_FETCH_FACTOR if names else 2)
+    hits = dify.retrieve(dataset_id, question, top_k=fetch_k, document_names=names)
+    evidence = _verified_unique_evidence(conn, project_id, hits, document_ids or None)[:TOP_K]
+    logger.info(
+        "project=%s 검색결과=%d건 → 검증후근거=%d건", project_id, len(hits), len(evidence)
+    )
+    return evidence
+
+
 @log_timing(logger, "answer_question")
 def answer_question(
-    conn: sqlite3.Connection, user_id: int, project_id: int, dataset_id: str, question: str
+    conn: sqlite3.Connection,
+    user_id: int,
+    project_id: int,
+    dataset_id: str,
+    question: str,
+    document_ids: list[int] | None = None,
 ) -> Answer:
     # 클라이언트가 보낸 project_id·역할을 그대로 신뢰하지 않는다 — 서버가 매번 재확인한다(§6).
     require_project_access(conn, user_id, project_id, action="read")
 
-    hits = dify.retrieve(dataset_id, question, top_k=TOP_K * 2)
-    evidence = _verified_unique_evidence(conn, project_id, hits)[:TOP_K]
-    logger.info(
-        "project=%s 검색결과=%d건 → 검증후근거=%d건", project_id, len(hits), len(evidence)
-    )
+    evidence = retrieve_evidence(conn, project_id, dataset_id, question, document_ids)
     if not evidence:
         logger.warning("project=%s 답변 유보: 근거 없음", project_id)
         return Answer.abstain("허용된 사업 자료에서 근거를 찾지 못했습니다")
@@ -113,12 +161,12 @@ def answer_question(
     except Exception:
         budget.cancel(conn, reservation_id)
         logger.exception("project=%s 답변 생성 실패", project_id)
-        return Answer.abstain("답변 생성 중 오류가 발생했습니다")
+        return Answer.abstain("답변 생성 중 오류가 발생했습니다", errored=True)
     actual = llm.actual_cost_krw(ANSWER_MODEL, usage.prompt_tokens, usage.completion_tokens)
     budget.settle(conn, reservation_id, actual)  # §10 — 예약은 추정치, 정산은 실제 usage
 
     valid_asset_ids = {e.asset_id for e in evidence}
-    if result.abstain or not set(result.cited_asset_ids) <= valid_asset_ids:
+    if result.abstain or not result.cited_asset_ids or not set(result.cited_asset_ids) <= valid_asset_ids:
         # 허구 출처·전달하지 않은 이미지 인용을 거부한다(§4.2, §6).
         if not result.abstain:
             logger.warning(

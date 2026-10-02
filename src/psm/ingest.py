@@ -9,8 +9,10 @@ from __future__ import annotations
 import hashlib
 import shutil
 import sqlite3
+import unicodedata
 from pathlib import Path
 
+import httpx
 import pypdfium2 as pdfium
 
 from psm import budget, dify, llm
@@ -24,7 +26,7 @@ from psm.config import (
 )
 from psm.logging_config import get_logger, log_timing
 
-_MIN_EXTRACTABLE_TEXT_CHARS = 20  # 이보다 적으면 텍스트 페이지가 아니라 렌더링해 이미지로 판독한다
+MIN_EXTRACTABLE_TEXT_CHARS = 20  # 이보다 적으면 텍스트 페이지가 아니라 렌더링해 이미지로 판독한다
 
 logger = get_logger("ingest")
 
@@ -88,7 +90,7 @@ def register_document(
     cursor = conn.execute(
         "INSERT INTO documents (project_id, filename, sha256, mime_type, export_approved, uploaded_by) "
         "VALUES (?, ?, ?, ?, 1, ?)",
-        (project_id, file_path.name, sha256, mime_type, uploader_id),
+        (project_id, unicodedata.normalize("NFC", file_path.name), sha256, mime_type, uploader_id),
     )
     conn.commit()
     return cursor.lastrowid
@@ -173,7 +175,7 @@ def index_asset(
 
     try:
         dify_document_id = dify.add_text_document(dataset_id, asset_id, text)
-    except dify.DifyError:
+    except (dify.DifyError, httpx.HTTPError, KeyError):  # 타임아웃·연결 오류·응답 모양 이상도 같다
         budget.cancel(conn, reservation_id)
         conn.execute(
             "UPDATE assets SET status = 'error_retry', description_text = ? WHERE id = ?",
@@ -193,16 +195,21 @@ def index_asset(
     return asset_id
 
 
-def process_pdf_pages(pdf_path: Path, render_dir: Path) -> list[tuple[str, Path | None]]:
+def process_pdf_pages(
+    pdf_path: Path, render_dir: Path, max_pages: int | None = None
+) -> list[tuple[str, Path | None]]:
     """페이지별 (추출 텍스트, 렌더링된 이미지 경로|None). 텍스트가 부실한 페이지만 렌더링해
-    이미지 판독으로 돌린다(§3 "PDF 전처리: pypdfium2로 텍스트 추출·페이지 렌더링")."""
+    이미지 판독으로 돌린다(§3 "PDF 전처리: pypdfium2로 텍스트 추출·페이지 렌더링").
+    max_pages가 있으면 앞 N쪽만 처리한다(샘플 테스트용 비용 상한)."""
     pdf = pdfium.PdfDocument(str(pdf_path))
     try:
         pages: list[tuple[str, Path | None]] = []
         for page_number, page in enumerate(pdf, start=1):
+            if max_pages is not None and page_number > max_pages:
+                break
             text = page.get_textpage().get_text_range().strip()
             image_path = None
-            if len(text) < _MIN_EXTRACTABLE_TEXT_CHARS:
+            if len(text) < MIN_EXTRACTABLE_TEXT_CHARS:
                 render_dir.mkdir(parents=True, exist_ok=True)
                 image_path = render_dir / f"{pdf_path.stem}_p{page_number}.png"
                 page.render(scale=2.0).to_pil().save(image_path)
@@ -221,6 +228,7 @@ def ingest_and_index(
     file_path: Path,
     mime_type: str,
     export_approved: bool,
+    max_pages: int | None = None,
 ) -> int:
     """등록 + 전처리 + 색인을 한 번에 진행한다. 화면(pages/register.py)은 이 함수 하나만 부른다."""
     document_id = register_document(
@@ -231,7 +239,7 @@ def ingest_and_index(
     if mime_type == "application/pdf":
         render_dir = THUMBNAILS_DIR / str(project_id)
         for page_number, (text, image_path) in enumerate(
-            process_pdf_pages(stored_path, render_dir), start=1
+            process_pdf_pages(stored_path, render_dir, max_pages), start=1
         ):
             if image_path is not None:
                 index_asset(conn, document_id, project_id, dataset_id, "image", image_path, page_number)

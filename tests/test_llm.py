@@ -61,3 +61,30 @@ def test_estimate_cost_scales_with_images():
 
 def test_actual_cost_is_zero_for_zero_tokens():
     assert llm.actual_cost_krw("gpt-4.1-mini", prompt_tokens=0, completion_tokens=0) == 0.0
+
+
+def test_runtime_key_takes_priority_over_env_and_status_hides_the_key(monkeypatch):
+    monkeypatch.setattr(llm, "OPENAI_API_KEY", "sk-env-1111")
+    llm.set_runtime_api_key("sk-screen-9999")
+    try:
+        assert llm._client().api_key == "sk-screen-9999"
+        status = llm.api_key_status()
+        assert status == {"configured": True, "source": "screen", "last4": "9999"}
+        assert "sk-screen" not in str(status)
+    finally:
+        llm.set_runtime_api_key(None)
+
+
+def test_env_key_is_used_when_no_runtime_key(monkeypatch):
+    monkeypatch.setattr(llm, "OPENAI_API_KEY", "sk-env-1111")
+    llm.set_runtime_api_key(None)
+
+    assert llm._client().api_key == "sk-env-1111"
+    assert llm.api_key_status() == {"configured": True, "source": "env", "last4": "1111"}
+
+
+def test_status_reports_unconfigured_when_no_key_anywhere(monkeypatch):
+    monkeypatch.setattr(llm, "OPENAI_API_KEY", "")
+    llm.set_runtime_api_key(None)
+
+    assert llm.api_key_status() == {"configured": False, "source": None, "last4": None}

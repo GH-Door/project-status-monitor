@@ -67,3 +67,14 @@ def test_unknown_user_is_denied(conn):
     conn.commit()
     with pytest.raises(auth.AccessDeniedError):
         auth.require_project_access(conn, user_id=999, project_id=1, action="read")
+
+
+def test_demo_user_is_created_once_as_admin(conn):
+    from psm import auth
+
+    first = auth.demo_user_id(conn)
+    second = auth.demo_user_id(conn)
+
+    assert first == second
+    row = conn.execute("SELECT is_admin, username FROM users WHERE id = ?", (first,)).fetchone()
+    assert (row["is_admin"], row["username"]) == (1, "demo_admin")

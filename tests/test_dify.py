@@ -74,3 +74,55 @@ def test_retrieve_raises_on_error_status(monkeypatch):
         assert False, "DifyError가 발생해야 합니다"
     except dify.DifyError:
         pass
+
+
+def test_retrieve_without_documents_sends_no_metadata_filter(monkeypatch):
+    stub_client = _StubClient(_StubResponse(200, {"records": []}))
+    monkeypatch.setattr(dify, "_client", lambda: stub_client)
+
+    dify.retrieve("dataset-1", "질문", top_k=5)
+
+    assert "metadata_filtering_conditions" not in stub_client.last_payload
+
+
+def test_retrieve_with_documents_filters_by_document_name(monkeypatch):
+    stub_client = _StubClient(_StubResponse(200, {"records": []}))
+    monkeypatch.setattr(dify, "_client", lambda: stub_client)
+
+    dify.retrieve("dataset-1", "질문", top_k=5, document_names=["asset:3", "asset:7"])
+
+    assert stub_client.last_payload["metadata_filtering_conditions"] == {
+        "logical_operator": "or",
+        "conditions": [
+            {"name": "document_name", "comparison_operator": "is", "value": "asset:3"},
+            {"name": "document_name", "comparison_operator": "is", "value": "asset:7"},
+        ],
+    }
+
+
+def test_create_dataset_enables_builtin_metadata_and_returns_id(monkeypatch):
+    class _Client(_StubClient):
+        def __init__(self):
+            super().__init__(_StubResponse(200, {"id": "ds-9"}))
+            self.urls = []
+
+        def post(self, url, json=None):
+            self.urls.append(url)
+            return self._response
+
+    stub_client = _Client()
+    monkeypatch.setattr(dify, "_client", lambda: stub_client)
+
+    assert dify.create_dataset("누베른코스") == "ds-9"
+    assert stub_client.urls == ["/datasets", "/datasets/ds-9/metadata/built-in/enable"]
+
+
+def test_document_filter_is_sent_inside_retrieval_model_as_well(monkeypatch):
+    """Dify 버전에 따라 필터 위치가 다를 수 있어 두 곳에 같은 값을 보낸다."""
+    stub_client = _StubClient(_StubResponse(200, {"records": []}))
+    monkeypatch.setattr(dify, "_client", lambda: stub_client)
+
+    dify.retrieve("dataset-1", "질문", top_k=5, document_names=["asset:3"])
+
+    payload = stub_client.last_payload
+    assert payload["retrieval_model"]["metadata_filtering_conditions"] == payload["metadata_filtering_conditions"]

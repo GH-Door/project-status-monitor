@@ -48,7 +48,14 @@ def add_text_document(dataset_id: str, asset_id: int, text: str) -> str:
         "indexing_technique": "high_quality",
         "process_rule": {
             "mode": "custom",
-            "rules": {"segmentation": {"separator": "\n", "max_tokens": _SEGMENT_MAX_TOKENS}},
+            "rules": {
+                # Dify custom 모드는 전처리 규칙 목록이 필수다. 원문을 바꾸지 않도록 둘 다 끈다.
+                "pre_processing_rules": [
+                    {"id": "remove_extra_spaces", "enabled": False},
+                    {"id": "remove_urls_emails", "enabled": False},
+                ],
+                "segmentation": {"separator": "\n", "max_tokens": _SEGMENT_MAX_TOKENS},
+            },
         },
     }
     with _client() as client:
@@ -57,9 +64,37 @@ def add_text_document(dataset_id: str, asset_id: int, text: str) -> str:
     return response.json()["document"]["id"]
 
 
+def create_dataset(name: str) -> str:
+    """빈 지식베이스를 만들고 ID를 반환한다. 문서 선택 검색(document_name 필터)에 쓰도록
+    내장 메타데이터를 켠다."""
+    with _client() as client:
+        response = client.post("/datasets", json={"name": name, "permission": "only_me"})
+        _raise_for_status(response, "지식베이스 생성")
+        dataset_id = response.json()["id"]
+        enable = client.post(f"/datasets/{dataset_id}/metadata/built-in/enable")
+    _raise_for_status(enable, "내장 메타데이터 활성화")
+    return dataset_id
+
+
+def _document_name_filter(document_names: list[str]) -> dict:
+    return {
+        "logical_operator": "or",
+        "conditions": [
+            {"name": "document_name", "comparison_operator": "is", "value": name}
+            for name in document_names
+        ],
+    }
+
+
 @log_timing(logger, "retrieve")
-def retrieve(dataset_id: str, query: str, top_k: int) -> list[dict]:
-    """상위 top_k 검색 결과. 각 항목의 document_name에서 asset_id를 뽑아 서버 DB와 대조한다."""
+def retrieve(
+    dataset_id: str, query: str, top_k: int, document_names: list[str] | None = None
+) -> list[dict]:
+    """상위 top_k 검색 결과. 각 항목의 document_name에서 asset_id를 뽑아 서버 DB와 대조한다.
+
+    document_names를 주면 그 문서들 안에서만 검색한다. Dify 필터만 믿지 않고 rag.py가
+    선택 문서 소속인지 한 번 더 검사한다.
+    """
     payload = {
         "query": query[:_QUERY_MAX_LEN],
         "retrieval_model": {
@@ -69,6 +104,12 @@ def retrieve(dataset_id: str, query: str, top_k: int) -> list[dict]:
             "score_threshold_enabled": False,
         },
     }
+    if document_names:
+        # Dify 버전에 따라 필터 위치가 다를 수 있어(최상위 / retrieval_model 안) 같은 값을 둘 다에 보낸다.
+        # ponytail: 실제 Dify로 어느 쪽이 먹는지 확인되면 한쪽만 남긴다. 결과는 rag.py가 한 번 더 거른다.
+        conditions = _document_name_filter(document_names)
+        payload["metadata_filtering_conditions"] = conditions
+        payload["retrieval_model"]["metadata_filtering_conditions"] = conditions
     with _client() as client:
         response = client.post(f"/datasets/{dataset_id}/retrieve", json=payload)
     _raise_for_status(response, "검색")

@@ -19,6 +19,9 @@ COMPARE_MODEL = os.getenv("COMPARE_MODEL", "gpt-4.1")
 # --- 저장 경로 ---
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
 DB_PATH = Path(os.getenv("DB_PATH", "data/app.db"))
+# 이 폴더 하나가 한 회사의 문서 DB다(하위 폴더 포함). md 파일을 넣고 [폴더 동기화]를 누르면 색인된다.
+COMPANY_NAME = os.getenv("COMPANY_NAME", "")  # 비우면 폴더 구성에서 정한다. 설정 화면에서 바꿀 수 있다
+RAG_DOCS_DIR = Path(os.getenv("RAG_DOCS_DIR", str(DATA_DIR / "RAG_문서")))
 ORIGINALS_DIR = DATA_DIR / "originals"
 THUMBNAILS_DIR = DATA_DIR / "thumbnails"
 
@@ -26,6 +29,7 @@ THUMBNAILS_DIR = DATA_DIR / "thumbnails"
 TOP_K = 5
 MAX_IMAGES_PER_ANSWER = 3
 MAX_OUTPUT_TOKENS = 800
+KPI_MAX_OUTPUT_TOKENS = 3000  # 문서 1건에서 지표와 표를 한꺼번에 뽑는 호출의 출력 상한
 
 # --- 경고 판정 임계값 (기획서 §5) ---
 DUE_SOON_DAYS = 3

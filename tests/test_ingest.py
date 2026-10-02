@@ -157,3 +157,22 @@ def test_index_asset_marks_error_retry_when_budget_exceeded(conn, monkeypatch):
 
     row = conn.execute("SELECT status FROM assets WHERE id = ?", (asset_id,)).fetchone()
     assert row["status"] == "error_retry"  # 'pending'에 갇히지 않아야 한다
+
+
+def test_network_failure_while_indexing_cancels_the_budget_reservation(conn, tmp_path, monkeypatch):
+    import httpx
+
+    _seed_project(conn)
+    file_path = tmp_path / "a.md"
+    file_path.write_text("본문입니다. 충분히 긴 본문.", encoding="utf-8")
+
+    def _down(*a, **k):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ingest, "ORIGINALS_DIR", tmp_path / "originals")
+    monkeypatch.setattr(dify, "add_text_document", _down)
+
+    ingest.ingest_and_index(conn, 1, 1, "ds", file_path, "text/markdown", export_approved=True)
+
+    assert conn.execute("SELECT status FROM assets").fetchone()["status"] == "error_retry"
+    assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'reserved'").fetchone()[0] == 0

@@ -17,10 +17,18 @@ def evaluate_alerts(project: ProjectInfo, milestones: list[Milestone], today: da
     if project.status != "active":
         return []
 
-    if not (project.owner_assigned and project.goal and project.has_active_baseline):
-        # ponytail: 세부 항목별 경고 대신 단일 "정보부족"으로 단순화. 실제 필드별 원인 표시가
-        # 필요해지면 owner/goal/baseline 각각을 별도 Alert로 나눈다.
-        return [Alert("정보부족", "담당자·방향·기준선 중 누락된 값이 있습니다.")]
+    missing = [
+        label
+        for present, label in (
+            (project.owner_assigned, "담당자"),
+            (bool(project.goal), "목표(방향)"),
+            (project.has_active_baseline, "기준선"),
+        )
+        if not present
+    ]
+    if missing:
+        # ponytail: 누락 항목을 한 문장으로 알린다. 항목별 별도 경고가 필요해지면 나눈다.
+        return [Alert("정보부족", f"입력이 필요한 항목: {', '.join(missing)}")]
 
     return [
         *_overdue(milestones, today),
