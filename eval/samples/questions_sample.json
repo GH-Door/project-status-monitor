@@ -1,0 +1,230 @@
+[
+ {
+  "id": "A01",
+  "category": "A",
+  "type": "answerable",
+  "question": "임금명세서를 교부하지 않은 사용자에게 부과되는 과태료의 상한은 얼마인가요?",
+  "expected_keywords": [
+   "500만원"
+  ],
+  "gold": [
+   {
+    "filename": "11.134 임금명세서",
+    "page": 2
+   }
+  ]
+ },
+ {
+  "id": "A02",
+  "category": "A",
+  "type": "answerable",
+  "question": "임금명세서를 카카오톡 같은 전자적 방법으로 교부해도 되나요?",
+  "expected_keywords": [
+   "가능"
+  ],
+  "gold": [
+   {
+    "filename": "11.134 임금명세서",
+    "page": 1
+   }
+  ]
+ },
+ {
+  "id": "A03",
+  "category": "A",
+  "type": "answerable",
+  "question": "18세 미만 연소근로자의 근로시간 한도는 얼마인가요?",
+  "expected_keywords": [
+   "7시간",
+   "35시간"
+  ],
+  "gold": [
+   {
+    "filename": "2-2.개정 표준근로계약서",
+    "page": 3
+   }
+  ]
+ },
+ {
+  "id": "A04",
+  "category": "A",
+  "type": "answerable",
+  "question": "단시간근로자가 정해진 시간을 초과해 근로하면 가산임금은 통상임금의 얼마 이상인가요?",
+  "expected_keywords": [
+   "50"
+  ],
+  "gold": [
+   {
+    "filename": "2-2.개정 표준근로계약서",
+    "page": 6
+   }
+  ]
+ },
+ {
+  "id": "A05",
+  "category": "A",
+  "type": "answerable",
+  "question": "확정기여형(DC) 퇴직연금에서 사용자가 납입해야 하는 부담금의 최소 기준은?",
+  "expected_keywords": [
+   "12"
+  ],
+  "gold": [
+   {
+    "filename": "13.140 퇴직연금제도",
+    "page": 1
+   }
+  ]
+ },
+ {
+  "id": "A06",
+  "category": "A",
+  "type": "answerable",
+  "question": "확정급여형(DB) 퇴직연금의 급여는 계속근로기간 1년에 대해 얼마 이상이어야 하나요?",
+  "expected_keywords": [
+   "30일분"
+  ],
+  "gold": [
+   {
+    "filename": "13.140 퇴직연금제도",
+    "page": 1
+   }
+  ]
+ },
+ {
+  "id": "A07",
+  "category": "A",
+  "type": "answerable",
+  "question": "퇴직연금사업자를 선정할 때 사용자는 누구의 동의를 받아야 하나요?",
+  "expected_keywords": [
+   "근로자대표"
+  ],
+  "gold": [
+   {
+    "filename": "13.140 퇴직연금제도",
+    "page": 2
+   }
+  ]
+ },
+ {
+  "id": "A-N1",
+  "category": "A",
+  "type": "abstain",
+  "question": "육아휴직 급여의 월 상한액은 얼마인가요?",
+  "expected_keywords": [],
+  "gold": []
+ },
+ {
+  "id": "A-N2",
+  "category": "A",
+  "type": "abstain",
+  "question": "우리 팀의 이번 분기 매출 목표는 얼마인가요?",
+  "expected_keywords": [],
+  "gold": []
+ },
+ {
+  "id": "B01",
+  "category": "B",
+  "type": "answerable",
+  "question": "개인정보 유출 사실을 알게 된 개인정보 보호책임자는 가장 먼저 누구에게 보고해야 하나요?",
+  "expected_keywords": [
+   "CEO"
+  ],
+  "gold": [
+   {
+    "filename": "18.개인정보_유출_대응_메뉴얼",
+    "page": 9
+   }
+  ]
+ },
+ {
+  "id": "B02",
+  "category": "B",
+  "type": "answerable",
+  "question": "개인정보 유출 신속대응팀에서 유관기관에 침해사고를 신고하는 담당자는 누구인가요?",
+  "expected_keywords": [
+   "정보보호 담당자"
+  ],
+  "gold": [
+   {
+    "filename": "18.개인정보_유출_대응_메뉴얼",
+    "page": 10
+   }
+  ]
+ },
+ {
+  "id": "B03",
+  "category": "B",
+  "type": "answerable",
+  "question": "내부자가 개인정보를 유출한 경우 회수해야 하는 매체의 예시는 무엇인가요?",
+  "expected_keywords": [
+   "USB"
+  ],
+  "gold": [
+   {
+    "filename": "18.개인정보_유출_대응_메뉴얼",
+    "page": 12
+   }
+  ]
+ },
+ {
+  "id": "B-N1",
+  "category": "B",
+  "type": "abstain",
+  "question": "GDPR 위반 시 과징금의 최대 비율은 얼마인가요?",
+  "expected_keywords": [],
+  "gold": []
+ },
+ {
+  "id": "C01",
+  "category": "C",
+  "type": "answerable",
+  "question": "비영리법인이 정보통신서비스 제공자로 분류되는 경우는 언제인가요?",
+  "expected_keywords": [
+   "수익사업"
+  ],
+  "gold": [
+   {
+    "filename": "25.정보보호+최고책임자",
+    "page": 7
+   }
+  ]
+ },
+ {
+  "id": "C02",
+  "category": "C",
+  "type": "answerable",
+  "question": "정보보호 최고책임자의 침해사고 예방·대응 직무에는 무엇을 마련·시행하는 것이 포함되나요?",
+  "expected_keywords": [
+   "대응계획"
+  ],
+  "gold": [
+   {
+    "filename": "25.정보보호+최고책임자",
+    "page": 13
+   }
+  ]
+ },
+ {
+  "id": "C03",
+  "category": "C",
+  "type": "answerable",
+  "question": "정보보호 업무에 해당하는 프로그램 개발 업무는 어떤 것인가요?",
+  "expected_keywords": [
+   "자체 보안 프로그램"
+  ],
+  "gold": [
+   {
+    "filename": "25.정보보호+최고책임자",
+    "page": 14
+   }
+  ]
+ },
+ {
+  "id": "C-N1",
+  "category": "C",
+  "type": "abstain",
+  "question": "ISMS-P 인증 심사 수수료는 얼마인가요?",
+  "expected_keywords": [],
+  "gold": []
+ }
+]

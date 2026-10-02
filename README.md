@@ -3,7 +3,7 @@
 # 사업 현황 모니터링
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
-![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)
 ![OpenAI](https://img.shields.io/badge/OpenAI-412991?logo=openai&logoColor=white)
 ![Dify](https://img.shields.io/badge/Dify-1C64F2)
@@ -50,7 +50,7 @@
 |---|---|
 | 📅 Date | 2026.09 ~ 10 (8주) |
 | 👥 Type | 팀 프로젝트 |
-| 🔧 Tech Stack | Python, Streamlit, SQLite, Dify, OpenAI, uv |
+| 🔧 Tech Stack | Python, FastAPI, HTML/JS, SQLite, Dify, OpenAI, uv |
 | 📊 Dataset | 추후 작성 |
 
 ## ✨ Key Features
@@ -86,7 +86,7 @@
 
 | 구분 | 사용 기술 |
 |---|---|
-| 화면 | Streamlit |
+| 화면 | FastAPI + HTML/JS (`web/`) |
 | DB | SQLite (stdlib `sqlite3`) |
 | 검색 | Dify Dataset API |
 | 임베딩 | OpenAI `text-embedding-3-small` |
@@ -114,7 +114,12 @@ cp .env.example .env
 docker compose up --build
 ```
 
-- 브라우저에서 http://localhost:8501 접속
+- 브라우저에서 http://localhost:8000 접속
+- 문서 폴더: `data/RAG_문서/` 안에 **한 회사**의 md 문서를 넣고(하위 폴더 가능) 화면 우상단 [폴더 동기화]. 이 폴더 전체가 그 회사의 문서 DB예요. 정답·answer·gold 이름의 파일과 `_`로 시작하는 파일은 제외돼요.
+- 첫 화면은 그 회사의 KPI 대시보드예요. 매출·예산·이익률은 문서에서 읽어 검증식을 통과하면 승인 없이 반영되고, 이 회사만의 지표와 표 그래프는 OpenAI 키가 있을 때 문서에서 더 뽑아요(원문에 있는 값만). 진척률만 사람이 승인해요.
+- 회사 이름은 `.env`의 `COMPANY_NAME`이나 화면의 [일정·승인 관리]에서 정해요.
+- OpenAI 키는 `.env`에 넣거나 화면의 [설정]에서 입력 (화면 입력 값은 서버 메모리에만 보관)
+- 코드 수정 후에는 컨테이너를 다시 시작해야 반영됩니다 (`docker compose restart app`)
 - 테스트: `docker compose run --rm app pytest`
 - 린트: `docker compose run --rm app ruff check`
 - `pyproject.toml`/`uv.lock` 변경 후에는 `docker compose build` 다시 실행
@@ -129,17 +134,16 @@ cp .env.example .env   # OPENAI_API_KEY, DIFY_API_BASE, DIFY_DATASET_API_KEY 입
 ## 🚀 Quick Start
 
 ```bash
-uv run streamlit run app.py
+uv run uvicorn psm.api:app --reload   # http://localhost:8000
 ```
 
 ## 📁 Project Structure
 
 ```
 project-status-monitor/
-├── app.py            # 진입점 (로그인 게이트 + 내비게이션)
-├── pages/             # 화면 4개 — 현황 / 상세 / 검색 / 등록·검토
-├── src/psm/            # 백엔드 로직 (config, db, auth, progress, alerts, approvals, budget, dify, llm, ingest, rag ...)
-├── tests/                # pytest 74개
+├── web/                # 화면 (HTML/JS) — 대시보드 / 문답 / 문서 / 승인 / 레포트 / 설정
+├── src/psm/            # 백엔드 (api, library, metrics, baseline, overview, progress, alerts, approvals, budget, dify, llm, ingest, rag ...)
+├── tests/                # pytest
 ├── docs/                  # 기획 문서
 └── logs/                   # 실행 로그
 ```

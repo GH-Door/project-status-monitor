@@ -1,0 +1,272 @@
+[
+  {
+    "id": "N01",
+    "category": "내용",
+    "type": "answerable",
+    "question": "여울결은 어떤 상품을 판매하는 사업인가요?",
+    "expected_keywords": [
+      "세안",
+      "토너",
+      "보습 크림"
+    ],
+    "gold": [
+      {
+        "filename": "01_사업계획서_BEAUTY-2026-002"
+      }
+    ],
+    "project": "누베른코스(화장품)",
+    "expected_answer": "여울결은 주식회사 누베른코스가 세안, 토너, 보습 크림 세 품목을 직접 기획하고 위탁 생산해 자사몰·모아뷰티몰·온픽라이브에서 판매하는 소비재 사업입니다."
+  },
+  {
+    "id": "N02",
+    "category": "매출",
+    "type": "answerable",
+    "question": "9월 순매출과 목표 달성률은 얼마인가요?",
+    "expected_keywords": [
+      "39,350,000",
+      "131.17"
+    ],
+    "gold": [
+      {
+        "filename": "04_2026년09월_매출보고서_BEAUTY-2026-002"
+      }
+    ],
+    "project": "누베른코스(화장품)",
+    "expected_answer": "9월 순매출은 39,350,000원으로 목표 30,000,000원보다 9,350,000원 높고, 목표 달성률은 131.17%입니다."
+  },
+  {
+    "id": "N03",
+    "category": "일정",
+    "type": "answerable",
+    "question": "온라인 정식 출시일은 언제인가요?",
+    "expected_keywords": [
+      "10월 12일"
+    ],
+    "gold": [
+      {
+        "filename": "02_출시_실행일정표_BEAUTY-2026-002"
+      }
+    ],
+    "project": "누베른코스(화장품)",
+    "expected_answer": "온라인 정식 출시일은 2026년 10월 12일 10:00입니다. 팝업 일정이 10월 17~18일로 바뀌었어도 출시일은 유지됩니다."
+  },
+  {
+    "id": "N04",
+    "category": "매출",
+    "type": "answerable",
+    "question": "9월 상품 매출총이익률은 얼마인가요?",
+    "expected_keywords": [
+      "60"
+    ],
+    "gold": [
+      {
+        "filename": "04_2026년09월_매출보고서_BEAUTY-2026-002"
+      }
+    ],
+    "project": "누베른코스(화장품)",
+    "expected_answer": "9월 상품 매출총이익률은 60.00%(매출총이익 23,610,000원)입니다. 광고·배송·수수료 차감 전 값이라 영업이익은 아닙니다."
+  },
+  {
+    "id": "N05",
+    "category": "유보",
+    "type": "abstain",
+    "question": "9월 영업이익은 얼마인가요?",
+    "expected_keywords": [],
+    "gold": [],
+    "project": "누베른코스(화장품)",
+    "expected_answer": "[유보] 9월 영업이익은 문서에 없어 답할 수 없습니다. 문서의 23,610,000원은 매출총이익이며 영업이익이라고 부르지 않습니다."
+  },
+  {
+    "id": "C01",
+    "category": "내용",
+    "type": "answerable",
+    "question": "담결로스터리는 고객에게 무엇을 어떻게 공급하나요?",
+    "expected_keywords": [
+      "원두",
+      "사무실"
+    ],
+    "gold": [
+      {
+        "filename": "01_사업계획서_COFFEE-2026-003"
+      }
+    ],
+    "project": "담결로스터리(커피)",
+    "expected_answer": "담결로스터리는 고요빈 원두를 볶고 포장해 사무실에 반복 공급합니다. 사무실 담당자가 월별 품목과 봉 수량을 확인하면 합의한 날짜에 공급합니다."
+  },
+  {
+    "id": "C02",
+    "category": "매출",
+    "type": "answerable",
+    "question": "9월 순매출과 달성률은 얼마인가요?",
+    "expected_keywords": [
+      "23,830,000",
+      "108.32"
+    ],
+    "gold": [
+      {
+        "filename": "04_2026년09월_매출보고서_COFFEE-2026-003"
+      }
+    ],
+    "project": "담결로스터리(커피)",
+    "expected_answer": "9월 순매출은 23,830,000원으로 목표 22,000,000원보다 1,830,000원 높고, 달성률은 108.32%입니다."
+  },
+  {
+    "id": "C03",
+    "category": "일정",
+    "type": "answerable",
+    "question": "첫 추가 배치 로스팅은 언제 하나요?",
+    "expected_keywords": [
+      "10월 6일"
+    ],
+    "gold": [
+      {
+        "filename": "06_재고_생산_납품현황_COFFEE-2026-003"
+      }
+    ],
+    "project": "담결로스터리(커피)",
+    "expected_answer": "첫 추가 배치 로스팅은 10월 6일 09:00~16:00에 예정되어 있습니다."
+  },
+  {
+    "id": "E01",
+    "category": "내용",
+    "type": "answerable",
+    "question": "다짐직무연구소는 어떤 교육을 운영하나요?",
+    "expected_keywords": [
+      "성인",
+      "직무교육"
+    ],
+    "gold": [
+      {
+        "filename": "01_사업계획서_EDU-2026-004"
+      }
+    ],
+    "project": "다짐직무연구소(교육)",
+    "expected_answer": "다짐직무연구소는 성인 실무자를 위한 대면 직무교육과 기업 단체 워크숍을 운영하며, 모든 과정은 만 18세 이상 성인 대상입니다."
+  },
+  {
+    "id": "E02",
+    "category": "매출",
+    "type": "answerable",
+    "question": "9월 순매출과 달성률은 얼마인가요?",
+    "expected_keywords": [
+      "21,450,000",
+      "107.25"
+    ],
+    "gold": [
+      {
+        "filename": "04_2026년09월_매출보고서_EDU-2026-004"
+      }
+    ],
+    "project": "다짐직무연구소(교육)",
+    "expected_answer": "9월 순매출은 21,450,000원(총매출 23,000,000원에서 확정 환불 1,550,000원 차감)이고, 목표 20,000,000원 대비 달성률은 107.25%입니다."
+  },
+  {
+    "id": "E03",
+    "category": "일정",
+    "type": "answerable",
+    "question": "9월에 제공한 세 과정의 수업은 언제까지 진행되었나요?",
+    "expected_keywords": [
+      "9월 25일"
+    ],
+    "gold": [
+      {
+        "filename": "03_사업진행_현황보고_EDU-2026-004"
+      }
+    ],
+    "project": "다짐직무연구소(교육)",
+    "expected_answer": "9월 세 과정의 5회 수업은 9월 25일까지 모두 제공되었습니다."
+  },
+  {
+    "id": "L01",
+    "category": "내용",
+    "type": "answerable",
+    "question": "클리어마루는 어떤 서비스를 제공하나요?",
+    "expected_keywords": [
+      "정기 청소",
+      "유리"
+    ],
+    "gold": [
+      {
+        "filename": "01_사업계획서_CLEAN-2026-005"
+      }
+    ],
+    "project": "클리어마루(청소)",
+    "expected_answer": "클리어마루는 중소기업 사무실의 정기 청소, 바닥 집중 관리, 실내 유리 청소를 제공하는 현장 서비스 사업입니다."
+  },
+  {
+    "id": "L02",
+    "category": "매출",
+    "type": "answerable",
+    "question": "9월 순매출과 달성률은 얼마인가요?",
+    "expected_keywords": [
+      "20,400,000",
+      "102"
+    ],
+    "gold": [
+      {
+        "filename": "04_2026년09월_매출보고서_CLEAN-2026-005"
+      }
+    ],
+    "project": "클리어마루(청소)",
+    "expected_answer": "9월 순매출은 부가세 제외 20,400,000원으로 목표 20,000,000원보다 400,000원 높고, 달성률은 102.00%입니다."
+  },
+  {
+    "id": "L03",
+    "category": "일정",
+    "type": "answerable",
+    "question": "루미설계 정기 청소는 언제 진행되나요?",
+    "expected_keywords": [
+      "10월 6일",
+      "화요일"
+    ],
+    "gold": [
+      {
+        "filename": "02_서비스_실행일정표_CLEAN-2026-005"
+      }
+    ],
+    "project": "클리어마루(청소)",
+    "expected_answer": "루미설계 정기 청소(CL-R01)는 2026-10-06부터 10-27까지 매주 화요일 18:00~21:00에 총 4회(10월 6일, 13일, 20일, 27일) 진행됩니다."
+  },
+  {
+    "id": "H01",
+    "category": "일정",
+    "type": "answerable",
+    "question": "물류센터 재고관리 시스템 사업의 현재 승인된 사업 기간은 언제까지인가요?",
+    "expected_keywords": [
+      "12월 31일"
+    ],
+    "gold": [
+      {
+        "filename": "01_사업계획서_PRJ-2026-001_v1.0"
+      }
+    ],
+    "project": "한빛솔루션(물류)",
+    "expected_answer": "현재 승인된(v1.0) 사업 기간은 2026-10-01부터 2026-12-31까지입니다. 12월 18일 인계는 구버전(v0.8) 일정입니다."
+  },
+  {
+    "id": "H02",
+    "category": "매출",
+    "type": "answerable",
+    "question": "승인된 예산 한도는 얼마인가요?",
+    "expected_keywords": [
+      "132,000,000"
+    ],
+    "gold": [
+      {
+        "filename": "01_사업계획서_PRJ-2026-001_v1.0"
+      }
+    ],
+    "project": "한빛솔루션(물류)",
+    "expected_answer": "승인된 예산 한도는 부가가치세를 포함해 132,000,000원입니다."
+  },
+  {
+    "id": "H03",
+    "category": "유보",
+    "type": "abstain",
+    "question": "한빛솔루션의 9월 순매출은 얼마인가요?",
+    "expected_keywords": [],
+    "gold": [],
+    "project": "한빛솔루션(물류)",
+    "expected_answer": "[유보] 한빛솔루션 문서에는 9월 순매출 자료가 없어 답할 수 없습니다. 10월 1일 현재 사전 기획만 완료된 사업입니다."
+  }
+]
