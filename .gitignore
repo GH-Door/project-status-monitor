@@ -25,9 +25,7 @@ eval/final/
 *.db-shm
 
 # logs
-logs/*.log
-logs/*.log.*
-!logs/.gitkeep
+logs/
 
 # graphify
 graphify-out/
