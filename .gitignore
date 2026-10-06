@@ -23,6 +23,7 @@ eval/final/
 *.db-journal
 *.db-wal
 *.db-shm
+eval/
 
 # logs
 logs/
