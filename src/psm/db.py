@@ -1,4 +1,4 @@
-"""SQLite 연결. ORM 없이 stdlib sqlite3만 사용 — 테이블 10개 미만 규모라 ORM은 과함."""
+"""SQLite 연결. ORM 없이 stdlib sqlite3만 사용 — 테이블 15개 안팎 규모라 ORM은 과함."""
 
 import sqlite3
 from pathlib import Path
@@ -25,6 +25,8 @@ _ADDED_COLUMNS = [
     ("business_metrics", "source", "TEXT NOT NULL DEFAULT 'rule'"),
     ("business_metrics", "importance", "INTEGER NOT NULL DEFAULT 3"),
     ("business_metrics", "check_note", "TEXT"),
+    ("business_metrics", "scope", "TEXT"),
+    ("kpi_breakdowns", "scope", "TEXT"),
     ("documents", "kpi_extracted_at", "TEXT"),
 ]
 

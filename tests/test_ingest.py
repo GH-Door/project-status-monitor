@@ -176,3 +176,28 @@ def test_network_failure_while_indexing_cancels_the_budget_reservation(conn, tmp
 
     assert conn.execute("SELECT status FROM assets").fetchone()["status"] == "error_retry"
     assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'reserved'").fetchone()[0] == 0
+
+
+def test_header_value_reads_a_field_from_the_front_matter():
+    text = '---\ndoc_id: "N01-D006"\nproject_id: "N01-P01"\nstatus: "approved_current"\n---\n본문 project_id: X'
+
+    assert ingest.header_value(text, "project_id") == "N01-P01"
+    assert ingest.header_value(text, "status") == "approved_current"
+    assert ingest.header_value(text, "missing") is None
+
+
+def test_header_value_ignores_text_outside_the_header_and_documents_without_one():
+    assert ingest.header_value("본문입니다\nproject_id: X", "project_id") is None
+    assert ingest.header_value(None, "project_id") is None
+
+
+def test_first_heading_is_the_first_h1_after_the_header():
+    text = "---\ndoc_id: D1\n---\n\n# 진루상사 최종 납기 변경 승인\n\n본문\n# 다른 제목"
+
+    assert ingest.first_heading(text) == "진루상사 최종 납기 변경 승인"
+
+
+def test_first_heading_works_without_a_header_and_is_none_without_a_heading():
+    assert ingest.first_heading("# 제목\n본문") == "제목"
+    assert ingest.first_heading("제목 없는 본문") is None
+    assert ingest.first_heading(None) is None

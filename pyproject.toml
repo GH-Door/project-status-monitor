@@ -1,7 +1,7 @@
 [project]
 name = "project-status-monitor"
 version = "0.1.0"
-description = "Add your description here"
+description = "사내 문서·이미지 근거 검색 기반 사업 진행률·리스크 모니터링 시스템"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

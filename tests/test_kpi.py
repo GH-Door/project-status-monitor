@@ -295,3 +295,53 @@ def test_duplicate_items_inside_one_document_are_counted_as_dropped_not_lost_sil
     result = kpi.extract_and_save(setup, 1, 5, DOC, extract_fn=_fn(kpis=[_kpi(), _kpi()]))
 
     assert result.kpis == 1 and result.dropped == 1
+
+
+# --- 하위 프로젝트(scope)와 단위 정규화 ---
+
+SCOPED = '---\nproject_id: "N01-P01"\n---\n' + DOC
+
+
+def test_scope_is_taken_from_the_document_header_project_id(setup):
+    kpi.extract_and_save(setup, 1, 5, SCOPED, extract_fn=_fn(kpis=[_kpi()], breakdowns=[_breakdown()]))
+
+    assert _saved(setup)["반품률"]["scope"] == "N01-P01"
+    assert setup.execute("SELECT scope FROM kpi_breakdowns").fetchone()["scope"] == "N01-P01"
+
+
+def test_scope_is_none_for_documents_without_a_project_header(setup):
+    kpi.extract_and_save(setup, 1, 5, DOC, extract_fn=_fn(kpis=[_kpi()]))
+
+    assert _saved(setup)["반품률"]["scope"] is None
+
+
+@pytest.mark.parametrize("raw, expected", [("퍼센트", "%"), ("KRW", "원"), ("밀리미터", "mm"), ("데시벨", "dB"), ("개", "개")])
+def test_units_are_normalized_to_one_notation(raw, expected):
+    assert kpi.normalize_unit(raw) == expected
+
+
+def test_saved_metric_and_breakdown_use_the_normalized_unit(setup):
+    item = _kpi(unit="퍼센트")
+    breakdown = _breakdown()
+    breakdown.unit = "KRW"
+
+    kpi.extract_and_save(setup, 1, 5, DOC, extract_fn=_fn(kpis=[item], breakdowns=[breakdown]))
+
+    assert _saved(setup)["반품률"]["unit"] == "%"
+    assert setup.execute("SELECT unit FROM kpi_breakdowns").fetchone()["unit"] == "원"
+
+
+def test_same_metric_in_two_sub_projects_is_not_flagged_as_a_conflict(setup):
+    setup.execute(
+        "INSERT INTO documents (id, project_id, filename, sha256, mime_type, uploaded_by) "
+        "VALUES (6, 1, 'other.md', 'h2', 'text/markdown', 1)"
+    )
+    setup.commit()
+    other = '---\nproject_id: "N01-P02"\n---\n' + DOC.replace("4.65%", "7.10%")
+    kpi.extract_and_save(setup, 1, 5, SCOPED, extract_fn=_fn(kpis=[_kpi()]))
+
+    kpi.extract_and_save(setup, 1, 6, other, extract_fn=_fn(kpis=[_kpi(value_text="7.10%", value=7.10,
+        quote="9월 순매출은 39,350,000원이며 반품률은 7.10%다.")]))
+
+    statuses = [r["status"] for r in setup.execute("SELECT status FROM business_metrics")]
+    assert statuses == ["approved", "approved"]  # 다른 프로젝트의 값이므로 충돌이 아니다

@@ -121,8 +121,21 @@ def test_highlights_are_the_most_important_company_specific_kpis(conn, seeded):
     kpis = overview.company_view(conn, TODAY)["kpis"]
 
     labels = [h["label"] for h in kpis["highlights"]]
-    assert labels[0] == "좌석 이용률" and len(labels) == 4 and "재고 회전" not in labels
+    assert labels[0] == "좌석 이용률" and len(labels) == 2 and "재고 회전" not in labels  # 카테고리당 2개까지
     assert len(kpis["table"]) == 6  # 표에는 모두 있다
+
+
+def test_highlights_take_at_most_two_per_category_and_eight_in_total(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "04_매출보고서.md")
+    for n, category in enumerate(("운영", "일정", "기타", "수익성", "비용")):
+        for i in range(3):
+            _llm_metric(conn, pid, 1, f"{category} 지표 {i}", 100 * (n + 1) + i, importance=5 - i, category=category)
+
+    highlights = overview.company_view(conn, TODAY)["kpis"]["highlights"]
+
+    counts = {c: sum(h["category"] == c for h in highlights) for c in ("운영", "일정", "기타", "수익성", "비용")}
+    assert max(counts.values()) == 2 and len(highlights) == 8
 
 
 def test_table_rows_say_where_each_value_came_from(conn, seeded):
@@ -436,3 +449,167 @@ def test_month_labels_are_ordered_by_time_not_by_value(conn, seeded):
     group = overview.company_view(conn, TODAY)["charts"]["groups"][0]
 
     assert group["labels"] == ["7월", "8월", "9월"] and group["series"][0]["values"] == [142, 181, 208]
+
+
+# --- 하위 프로젝트(scope): 섞지 않고 따로 보여 준다 ---
+
+def _scoped_metric(conn, pid, document_id, label, value, scope, *, unit="원", period="2026-09", importance=4):
+    _metric(conn, pid, document_id, f"{label}|{period}|{scope}", value, label=label, unit=unit, period=period,
+            source="llm", importance=importance, category="운영")
+    conn.execute("UPDATE business_metrics SET scope = ? WHERE document_id = ? AND label = ?", (scope, document_id, label))
+    conn.commit()
+
+
+def _scoped_setup(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "003_월간보고_라이트.md")
+    _doc(conn, pid, 2, "027_월간보고_코어.md")
+    _scoped_metric(conn, pid, 1, "처리 달성률", 55.0, "N01-P01", unit="%")
+    _scoped_metric(conn, pid, 2, "처리 달성률", 100.0, "N01-P02", unit="%")
+    return pid
+
+
+def test_same_metric_in_two_scopes_is_listed_for_each_scope(conn, seeded):
+    pid = _scoped_setup(conn, seeded)
+
+    rows = [(r["label"], r["value"]) for r in overview.kpi_view(conn, pid)["table"]]
+
+    assert rows.count(("처리 달성률", 55.0)) == 1 and rows.count(("처리 달성률", 100.0)) == 1  # 이름이 같아도 하나로 합치지 않는다
+
+
+def test_company_view_can_be_limited_to_one_scope(conn, seeded):
+    _scoped_setup(conn, seeded)
+
+    view = overview.company_view(conn, TODAY, scope="N01-P02")
+
+    assert [r["value"] for r in view["kpis"]["table"]] == [100.0]
+    assert view["scope"] == "N01-P02"
+
+
+def test_company_view_lists_the_available_scopes_with_counts(conn, seeded):
+    _scoped_setup(conn, seeded)
+
+    scopes = overview.company_view(conn, TODAY)["scopes"]
+
+    assert scopes == [{"scope": "N01-P01", "count": 1}, {"scope": "N01-P02", "count": 1}]
+
+
+def test_breakdowns_and_charts_are_limited_to_the_scope(conn, seeded):
+    pid = _scoped_setup(conn, seeded)
+    for document_id, scope, value in [(1, "N01-P01", 10), (2, "N01-P02", 99)]:
+        conn.execute(
+            "INSERT INTO kpi_breakdowns (project_id, document_id, name, unit, period, rows_json, evidence_text, importance, scope) "
+            "VALUES (?, ?, '자재별 수량', '개', '2026-09', ?, '표', 4, ?)",
+            (pid, document_id, json.dumps([{"label": "가", "value": value}, {"label": "나", "value": value + 1}]), scope),
+        )
+    conn.commit()
+
+    view = overview.company_view(conn, TODAY, scope="N01-P02")
+
+    assert [g["series"][0]["values"] for g in view["charts"]["groups"]] == [[100, 99]]
+    assert len(view["breakdowns"]) == 1
+
+
+def test_company_view_defaults_to_the_scope_with_the_most_metrics(conn, seeded):
+    pid = _scoped_setup(conn, seeded)
+    _scoped_metric(conn, pid, 2, "처리 건수", 7.0, "N01-P02", unit="건")
+
+    view = overview.company_view(conn, TODAY)
+
+    assert view["scope"] == "N01-P02"
+    assert {r["scope"] for r in view["kpis"]["table"]} == {"N01-P02"}
+
+
+def test_explicit_scope_overrides_the_default(conn, seeded):
+    pid = _scoped_setup(conn, seeded)
+    _scoped_metric(conn, pid, 2, "처리 건수", 7.0, "N01-P02", unit="건")
+
+    assert overview.company_view(conn, TODAY, scope="N01-P01")["scope"] == "N01-P01"
+
+
+# --- 프로젝트 비교: 같은 지표·표가 여러 하위 프로젝트에 있으면 한 차트에서 견준다 ---
+
+SCOPES = ("N01-P01", "N01-P02", "N01-P03")
+
+
+def _compare_metric(conn, pid, label, values, *, unit="원", category="비용", importance=4):
+    for scope, value in zip(SCOPES, values):
+        if value is None:
+            continue
+        key = f"{label}|{scope}"
+        _metric(conn, pid, 1, key, value, label=label, unit=unit, period="2026-09", source="llm",
+                importance=importance, category=category)
+        conn.execute("UPDATE business_metrics SET scope = ? WHERE key = ?", (scope, key))
+    conn.commit()
+
+
+def _compare_breakdown(conn, pid, name, per_scope, *, unit="원", importance=4):
+    for document_id, (scope, rows) in enumerate(zip(SCOPES, per_scope), start=1):  # 표는 문서마다 이름이 하나
+        conn.execute(
+            "INSERT INTO kpi_breakdowns (project_id, document_id, name, unit, period, rows_json, evidence_text, importance, scope) "
+            "VALUES (?, ?, ?, ?, '2026-09', ?, '표', ?, ?)",
+            (pid, document_id, name, unit, json.dumps([{"label": k, "value": v} for k, v in rows.items()]), importance, scope),
+        )
+    conn.commit()
+
+
+@pytest.fixture
+def compare_ready(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    for document_id, filename in enumerate(("003_월간보고_라이트.md", "015_월간보고_브릿지.md", "027_월간보고_코어.md"), start=1):
+        _doc(conn, pid, document_id, filename)
+    return pid
+
+
+def test_compare_lines_up_one_metric_across_projects(conn, compare_ready):
+    _compare_metric(conn, compare_ready, "처리 면적", (480, 620, 350), unit="㎡", category="운영")
+
+    groups = overview.compare_groups(conn, compare_ready)
+
+    assert len(groups) == 1 and groups[0]["compare"] is True
+    assert groups[0]["labels"] == list(SCOPES) and groups[0]["unit"] == "㎡"
+    assert groups[0]["series"] == [{"name": "처리 면적", "values": [480, 620, 350]}]
+
+
+def test_compare_needs_a_metric_in_at_least_three_projects(conn, compare_ready):
+    _compare_metric(conn, compare_ready, "처리 면적", (480, 620, None), unit="㎡")
+
+    assert overview.compare_groups(conn, compare_ready) == []
+
+
+def test_compare_puts_metrics_of_the_same_unit_in_one_chart(conn, compare_ready):
+    _compare_metric(conn, compare_ready, "승인 예산", (68, 64, 55), importance=5)
+    _compare_metric(conn, compare_ready, "청구 합계", (98, 96, 79), category="매출")
+
+    groups = overview.compare_groups(conn, compare_ready)
+
+    assert len(groups) == 1
+    assert [s["name"] for s in groups[0]["series"]] == ["승인 예산", "청구 합계"]
+
+
+def test_compare_stacks_shared_parts_and_adds_a_share_of_the_total(conn, compare_ready):
+    parts = [{"허가": 34, "대조": 20, "검수": 13}, {"허가": 32, "대조": 22, "검수": 9}, {"허가": 28, "대조": 18, "검수": 12}]
+    _compare_breakdown(conn, compare_ready, "예산 구분별 금액", parts)
+
+    stacked, share = overview.compare_groups(conn, compare_ready)
+
+    assert stacked["labels"] == list(SCOPES)
+    assert [(s["name"], s["values"]) for s in stacked["series"]] == [("허가", [34, 32, 28]), ("대조", [20, 22, 18]), ("검수", [13, 9, 12])]
+    assert share["kind"] == "share" and share["labels"] == ["허가", "대조", "검수"]
+    assert share["series"][0]["values"] == [94, 60, 34]
+
+
+def test_compare_does_not_share_a_total_that_contains_negative_parts(conn, compare_ready):
+    parts = [{"청구": 50, "감액": -3, "추가": 9}] * 3
+    _compare_breakdown(conn, compare_ready, "전표별 공급가액", parts)
+
+    assert [g["kind"] for g in overview.compare_groups(conn, compare_ready)] == ["bars"]
+
+
+def test_charts_keep_the_selected_projects_own_charts_and_add_the_comparisons(conn, compare_ready):
+    _compare_metric(conn, compare_ready, "처리 면적", (480, 620, 350), unit="㎡", category="운영")
+    _compare_breakdown(conn, compare_ready, "자재별 수량", [{"가": 1, "나": 2}] * 3, unit="개")
+
+    groups = overview.company_view(conn, TODAY, scope="N01-P02")["charts"]["groups"]
+
+    assert [g.get("compare", False) for g in groups] == [False, True, True]  # 이 프로젝트의 표 1개 + 비교 2개

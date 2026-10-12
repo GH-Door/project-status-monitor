@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from openai import LengthFinishReasonError
 
-from psm import budget, llm, metrics
+from psm import budget, ingest, llm, metrics
 from psm.config import ANSWER_MODEL, KPI_MAX_OUTPUT_TOKENS
 from psm.logging_config import get_logger
 
@@ -35,6 +35,8 @@ _INPUT_CHARS_FACTOR = 2  # 한글은 글자 수보다 토큰이 많다 — 예�
 _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 _CORE_LABELS = {label for label, _, _ in metrics.CORE_META.values()}
 _CORE_LABELS_NORMALIZED = frozenset(re.sub(r"\s+", "", label) for label in _CORE_LABELS)
+# 같은 단위가 문서마다 다르게 적혀 같은 지표가 둘로 갈라지는 것을 막는다(2026-10-08 새 자료 화면에서 확인한 표기만)
+_UNIT_ALIASES = {"퍼센트": "%", "KRW": "원", "밀리미터": "mm", "데시벨": "dB"}
 _CATEGORIES = ("매출", "수익성", "비용", "운영", "일정", "기타")
 
 
@@ -85,6 +87,11 @@ def _acceptable_label(name: str, unit: str) -> bool:
     return 0 < len(name.strip()) <= _MAX_NAME_CHARS and 0 < len(unit.strip()) <= _MAX_UNIT_CHARS
 
 
+def normalize_unit(unit: str) -> str:
+    cleaned = unit.strip()
+    return _UNIT_ALIASES.get(cleaned, cleaned)
+
+
 def _clamp(importance: int) -> int:
     return max(1, min(5, int(importance)))
 
@@ -93,17 +100,19 @@ def _category(raw: str) -> str:
     return raw if raw in _CATEGORIES else "기타"
 
 
-def _save_kpi(conn: sqlite3.Connection, project_id: int, document_id: int, item: llm.KpiItem) -> bool:
+def _save_kpi(
+    conn: sqlite3.Connection, project_id: int, document_id: int, item: llm.KpiItem, scope: str | None
+) -> bool:
     period = _clean_period(item.period)
     key = f"{item.name.strip()}|{period or ''}"
-    note = metrics._conflict_note(conn, project_id, document_id, key, period, item.value)
+    note = metrics._conflict_note(conn, project_id, document_id, key, period, item.value, scope)
     cursor = conn.execute(
         "INSERT OR IGNORE INTO business_metrics (project_id, document_id, key, value, unit, evidence_text, "
-        "status, approved_at, label, category, period, source, importance, check_note) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm', ?, ?)",
-        (project_id, document_id, key, item.value, item.unit, item.quote,
+        "status, approved_at, label, category, period, source, importance, check_note, scope) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'llm', ?, ?, ?)",
+        (project_id, document_id, key, item.value, normalize_unit(item.unit), item.quote,
          "pending" if note else "approved", None if note else metrics._now(),
-         item.name.strip(), _category(item.category), period, _clamp(item.importance), note),
+         item.name.strip(), _category(item.category), period, _clamp(item.importance), note, scope),
     )
     return cursor.rowcount == 1
 
@@ -126,13 +135,13 @@ def _verified_rows(breakdown: llm.Breakdown, lines: list[tuple[str, str]]) -> tu
 
 def _save_breakdown(
     conn: sqlite3.Connection, project_id: int, document_id: int, breakdown: llm.Breakdown, rows: list[dict],
-    evidence: str,
+    evidence: str, scope: str | None,
 ) -> bool:
     cursor = conn.execute(
         "INSERT OR IGNORE INTO kpi_breakdowns (project_id, document_id, name, unit, period, rows_json, "
-        "evidence_text, importance) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (project_id, document_id, breakdown.name.strip(), breakdown.unit.strip(), _clean_period(breakdown.period),
-         json.dumps(rows, ensure_ascii=False), evidence, _clamp(breakdown.importance)),
+        "evidence_text, importance, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (project_id, document_id, breakdown.name.strip(), normalize_unit(breakdown.unit), _clean_period(breakdown.period),
+         json.dumps(rows, ensure_ascii=False), evidence, _clamp(breakdown.importance), scope),
     )
     return cursor.rowcount == 1
 
@@ -168,6 +177,7 @@ def extract_and_save(
     if extraction is None:
         return ExtractResult(error="모델이 빈 응답을 돌려줬습니다")
 
+    scope = ingest.header_value(text, "project_id")  # 하위 프로젝트. 머리글이 없으면 None
     doc = _norm(text)
     lines = [(_norm(line), line.strip()) for line in text.splitlines() if line.strip()]
     kpis = breakdowns = dropped = 0
@@ -176,7 +186,7 @@ def extract_and_save(
             continue  # 핵심 지표는 규칙 추출이 이미 맡았다
         if not _acceptable_label(item.name, item.unit) or not _is_verified(item.value_text, item.value, item.quote, doc):
             dropped += 1
-        elif _save_kpi(conn, project_id, document_id, item):
+        elif _save_kpi(conn, project_id, document_id, item, scope):
             kpis += 1
         else:
             dropped += 1  # 같은 문서에 같은 이름·기간이 이미 있다
@@ -186,7 +196,7 @@ def extract_and_save(
             dropped += 1
             continue
         evidence = breakdown.quote if _norm(breakdown.quote) in doc else first_line
-        if _save_breakdown(conn, project_id, document_id, breakdown, rows, evidence):
+        if _save_breakdown(conn, project_id, document_id, breakdown, rows, evidence, scope):
             breakdowns += 1
         else:
             dropped += 1

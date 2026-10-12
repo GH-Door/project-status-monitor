@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import sqlite3
 import unicodedata
@@ -29,6 +30,40 @@ from psm.logging_config import get_logger, log_timing
 MIN_EXTRACTABLE_TEXT_CHARS = 20  # 이보다 적으면 텍스트 페이지가 아니라 렌더링해 이미지로 판독한다
 
 logger = get_logger("ingest")
+
+
+CURRENT_STATUS = "approved_current"
+_HEADER_LINE = re.compile(r"^(?P<key>[A-Za-z_][\w-]*):\s*\"?(?P<value>[^\"\n]*?)\"?\s*$", re.MULTILINE)
+
+
+def header_value(text: str | None, key: str) -> str | None:
+    """문서 머리글(맨 앞 `---` 사이의 YAML front matter)에서 key의 값을 읽는다. 머리글이 없으면 None."""
+    if not text or not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end < 0:
+        return None
+    for match in _HEADER_LINE.finditer(text[3:end]):
+        if match.group("key") == key:
+            return match.group("value") or None
+    return None
+
+
+def first_heading(text: str | None) -> str | None:
+    """머리글 뒤 본문의 첫 `# 제목` 줄(문서 제목). 없으면 None."""
+    if not text:
+        return None
+    body = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        body = text[end + 4:] if end >= 0 else text
+    match = re.search(r"^# +(.+?)\s*$", body, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def header_status(text: str | None) -> str | None:
+    """문서 머리글의 status 값(approved_current·historical·draft·pending …). 머리글이 없으면 None."""
+    return header_value(text, "status")
 
 
 class IngestRejected(Exception):
@@ -230,7 +265,7 @@ def ingest_and_index(
     export_approved: bool,
     max_pages: int | None = None,
 ) -> int:
-    """등록 + 전처리 + 색인을 한 번에 진행한다. 화면(pages/register.py)은 이 함수 하나만 부른다."""
+    """등록 + 전처리 + 색인을 한 번에 진행한다. library.index_file과 sample_run이 이 함수 하나만 부른다."""
     document_id = register_document(
         conn, project_id, uploader_id, file_path, mime_type, export_approved
     )

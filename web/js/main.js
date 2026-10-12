@@ -5,14 +5,13 @@ import { syncFolder } from "./sync.js";
 const ROUTES = [
   ["dashboard", "대시보드", () => import("./views/dashboard.js")],
   ["chat", "문답", () => import("./views/chat.js")],
-  ["docs", "문서", () => import("./views/docs.js")],
   ["review", "확인 필요", () => import("./views/review.js")],
   ["report", "레포트", () => import("./views/report.js")],
   ["settings", "설정", () => import("./views/settings.js")],
 ];
 const view = document.getElementById("view");
 const nav = document.getElementById("nav");
-const currentKey = () => (location.hash.slice(2) || "dashboard");
+const currentKey = () => (location.hash.slice(2).split("/")[0] || "dashboard");  // #/chat/12 → chat
 
 const pending = () => (state.company && !state.company.empty ? state.company.review.metrics + state.company.review.schedule : 0);
 

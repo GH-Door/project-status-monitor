@@ -40,9 +40,10 @@ function formSet(g, board) {
   // 출고 = 순판매 + 반품이라 셋을 한 막대에 쌓으면 같은 수량이 두 번 센다. 순판매·반품이 있으면 출고(합계)는 쌓지 않는다.
   const parts = shown.some((s) => /순판매/.test(s.name)) && shown.some((s) => /반품/.test(s.name)) ? shown.filter((s) => !/출고/.test(s.name)) : shown;
   const short = g.labels.length <= 6 && Math.max(...g.labels.map((l) => l.length)) <= 9;
+  const hasNegative = shown.some((s) => s.values.some((v) => v < 0));  // 마이너스가 섞이면 쌓을 수 없다(합계가 어긋난다)
   const set = {
     grouped: { label: "묶음", node: wrap(shown, short ? sized(({ width, height }) => columnChart({ ...shape, series: shown, ariaLabel: aria, width, height }), board) : rowChart({ ...shape, series: shown })) },
-    stacked: { label: "누적", node: wrap(parts, sized(({ width, height }) => stackedColumnChart({ ...shape, series: parts, ariaLabel: aria, width, height }), board)) },
+    ...(hasNegative ? {} : { stacked: { label: "누적", node: wrap(parts, sized(({ width, height }) => stackedColumnChart({ ...shape, series: parts, ariaLabel: aria, width, height }), board)) } }),
     rows: { label: "가로", node: wrap(shown, rowChart({ ...shape, series: shown })) },
   };
   if (r.burn) {

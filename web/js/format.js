@@ -19,3 +19,9 @@ export function compact(v, unit) {
 export const pct1 = (v) => (v == null ? "-" : `${num(v, 1)}%`);
 export const signed = (v, digits = 1) => (v == null ? "-" : `${v > 0 ? "+" : v < 0 ? "−" : ""}${num(Math.abs(v), digits)}`);
 export const clampPct = (v) => Math.max(0, Math.min(100, v));
+
+// 답변 아래 출처 줄: 인용한 문서 이름을 중복 없이 처음 나온 순서대로 잇는다. 근거가 없으면 null.
+export function sourceLine(items) {
+  const names = [...new Set((items ?? []).map((e) => e.document_name))];
+  return names.length ? `출처: ${names.join(" · ")}` : null;
+}

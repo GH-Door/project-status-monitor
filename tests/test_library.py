@@ -399,3 +399,50 @@ def test_already_registered_documents_get_their_rule_metrics_back_on_the_next_sy
     assert result.files_indexed == 0  # 다시 색인하지는 않는다
     rows = conn.execute("SELECT key, status FROM business_metrics").fetchall()
     assert {r["key"]: r["status"] for r in rows} == {"net_sales": "approved", "sales_target": "approved", "achievement_rate": "approved"}
+
+
+def _front_matter(status):
+    return f'---\ndoc_id: "D1"\nstatus: "{status}"\n---\n본문입니다. 충분히 긴 본문.'
+
+
+def test_documents_whose_header_status_is_not_current_are_not_sent_to_ai_extraction(conn, env):
+    _write(env["root"] / "01_현행.md", _front_matter("approved_current"))
+    _write(env["root"] / "02_과거판.md", _front_matter("historical"))
+    _write(env["root"] / "03_초안.md", _front_matter("draft"))
+
+    library.sync_folder(conn, user_id=1, root=env["root"])
+
+    sent = [conn.execute("SELECT filename FROM documents WHERE id = ?", (i,)).fetchone()["filename"] for i in env["calls"]["kpi"]]
+    assert sent == ["01_현행.md"]  # 지난 값이 회사 공식 지표로 올라오지 않게 한다
+
+
+def test_documents_without_a_header_status_are_still_extracted(conn, env):
+    _write(env["root"] / "01_사업계획서.md", "머리글 없는 본문입니다. 충분히 긴 본문.")
+
+    library.sync_folder(conn, user_id=1, root=env["root"])
+
+    assert len(env["calls"]["kpi"]) == 1
+
+
+def test_refresh_restores_previous_values_even_when_extraction_raises_an_unexpected_error(conn, env, monkeypatch):
+    """예상하지 못한 예외(DB 오류 등)여도 지웠던 기존 지표를 되돌려 놓고 예외는 그대로 알린다."""
+    _write(env["root"] / "01.md")
+    library.sync_folder(conn, user_id=1, root=env["root"])
+    project_id = library.company_project(conn)["id"]
+    document_id = conn.execute("SELECT id FROM documents").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO business_metrics (project_id, document_id, key, value, unit, evidence_text, status, source, label) "
+        "VALUES (?, ?, '반품률|2026-09', 4.65, '%', 'q', 'approved', 'llm', '반품률')",
+        (project_id, document_id),
+    )
+    conn.commit()
+
+    def _boom(*a, **k):
+        raise RuntimeError("예상하지 못한 오류")
+
+    monkeypatch.setattr(kpi, "extract_and_save", _boom)
+
+    with pytest.raises(RuntimeError):
+        library.refresh_kpis(conn, project_id)
+
+    assert conn.execute("SELECT COUNT(*) FROM business_metrics WHERE label = '반품률'").fetchone()[0] == 1

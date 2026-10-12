@@ -1,6 +1,6 @@
 services:
   app:
-    build: .
+    build: . # Dify는 이 compose에 없다. 호스트에서 따로 실행한다
     ports:
       - "127.0.0.1:8000:8000" # 로그인이 없는 서버라 이 PC에서만 접속. 사내 공유는 인증 프록시 뒤에서
     env_file:
@@ -12,4 +12,4 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway" # Linux 호스트에서도 동작하게
     volumes:
-      - .:/app # 코드 수정 즉시 반영 + data/·logs/ 호스트에 보존
+      - .:/app # 코드·data/·logs/를 호스트와 공유. 파이썬 코드는 재시작(docker compose restart app)해야 반영되고 web/는 새로고침만 하면 된다

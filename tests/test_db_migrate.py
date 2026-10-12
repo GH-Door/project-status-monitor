@@ -75,3 +75,24 @@ def test_rows_written_by_the_new_flow_survive_every_later_start():
     init_db(conn)
 
     assert conn.execute("SELECT COUNT(*) FROM business_metrics").fetchone()[0] == 1
+
+
+def test_old_db_without_conversations_gains_the_tables_and_keeps_data():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(OLD_METRICS)  # 대화 표가 없던 시절의 DB
+
+    init_db(conn)
+
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"conversations", "messages"} <= tables
+
+
+def test_scope_column_is_added_to_metrics_and_breakdowns():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(OLD_METRICS)
+
+    init_db(conn)
+
+    assert "scope" in _columns(conn, "business_metrics") and "scope" in _columns(conn, "kpi_breakdowns")

@@ -192,14 +192,16 @@ def _relation_failures(values: dict[str, float]) -> dict[str, str]:
 
 
 def _conflict_note(
-    conn: sqlite3.Connection, project_id: int, document_id: int, key: str, period: str | None, value: float
+    conn: sqlite3.Connection, project_id: int, document_id: int, key: str, period: str | None, value: float,
+    scope: str | None = None,
 ) -> str | None:
-    """같은 기간·같은 지표를 다른 문서가 이미 다른 값으로 반영해 두었으면 이유를 돌려준다."""
+    """같은 기간·같은 지표를 같은 하위 프로젝트의 다른 문서가 이미 다른 값으로 반영해 두었으면 이유를 돌려준다."""
     row = conn.execute(
         "SELECT m.value, d.filename FROM business_metrics m JOIN documents d ON d.id = m.document_id "
         "WHERE m.project_id = ? AND m.key = ? AND m.status = 'approved' AND m.document_id != ? "
-        "AND COALESCE(m.period, '') = COALESCE(?, '') AND ABS(m.value - ?) > 0.0001 LIMIT 1",
-        (project_id, key, document_id, period, value),
+        "AND COALESCE(m.period, '') = COALESCE(?, '') AND COALESCE(m.scope, '') = COALESCE(?, '') "
+        "AND ABS(m.value - ?) > 0.0001 LIMIT 1",
+        (project_id, key, document_id, period, scope, value),
     ).fetchone()
     if row is None:
         return None
@@ -304,13 +306,15 @@ def history(conn: sqlite3.Connection, project_id: int, key: str) -> list[tuple[s
     return list({row["period"]: row["value"] for row in rows}.items())
 
 
-def history_by_label(conn: sqlite3.Connection, project_id: int, label: str) -> list[tuple[str, float]]:
-    """AI가 뽑은 지표의 기간별 이력. 같은 이름(공백 무시)의 지표를 기간순으로 잇는다."""
+def history_by_label(
+    conn: sqlite3.Connection, project_id: int, label: str, scope: str | None = None
+) -> list[tuple[str, float]]:
+    """AI가 뽑은 지표의 기간별 이력. 같은 하위 프로젝트에서 같은 이름(공백 무시)의 지표를 기간순으로 잇는다."""
     wanted = re.sub(r"\s+", "", label)
     rows = conn.execute(
         "SELECT period, value, label FROM business_metrics WHERE project_id = ? AND source = 'llm' "
-        "AND status = 'approved' AND period IS NOT NULL ORDER BY period, id",
-        (project_id,),
+        "AND status = 'approved' AND period IS NOT NULL AND COALESCE(scope, '') = COALESCE(?, '') ORDER BY period, id",
+        (project_id, scope),
     ).fetchall()
     return list({r["period"]: r["value"] for r in rows if re.sub(r"\s+", "", r["label"] or "") == wanted}.items())
 

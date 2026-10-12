@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS business_metrics (
     source        TEXT NOT NULL DEFAULT 'rule', -- rule(정규식) | llm(원문 검증을 통과한 LLM 추출)
     importance    INTEGER NOT NULL DEFAULT 3,   -- 1~5, 대시보드 상단 타일 선정용
     check_note    TEXT,                         -- 확인이 필요한 이유
+    scope         TEXT,                         -- 하위 프로젝트(문서 머리글의 project_id). 모르면 NULL
     UNIQUE (project_id, document_id, key)
 );
 
@@ -155,6 +156,7 @@ CREATE TABLE IF NOT EXISTS kpi_breakdowns (
     importance    INTEGER NOT NULL DEFAULT 3,
     status        TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    scope         TEXT,                         -- 하위 프로젝트. 모르면 NULL
     UNIQUE (project_id, document_id, name)
 );
 
@@ -171,3 +173,41 @@ CREATE TABLE IF NOT EXISTS milestone_candidates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_metrics_project_status ON business_metrics(project_id, status);
+
+-- 대화형 문답. 대화 기록은 서버에만 둔다 — 클라이언트가 보낸 이전 답변을 믿지 않기 위해서다.
+-- 이전 답변은 맥락일 뿐 근거가 아니다: evidence_json은 화면 복원용 스냅샷이다.
+CREATE TABLE IF NOT EXISTS conversations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL,                   -- 첫 질문 앞 30자
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content         TEXT NOT NULL,
+    rewritten_query TEXT,                       -- 후속 질문을 독립 질문으로 바꾼 검색어
+    evidence_json   TEXT NOT NULL DEFAULT '[]', -- 인용한 근거 스냅샷(문서명·발췌·이미지 여부)
+    abstained       INTEGER NOT NULL DEFAULT 0,
+    abstain_reason  TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(project_id, user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
+
+-- 사용자가 대시보드에 보일 지표로 고른 위젯. 프로젝트(scope)별로 순서대로 통째로 저장한다. 행이 없으면 자동 기본값.
+CREATE TABLE IF NOT EXISTS dashboard_widgets (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    scope      TEXT NOT NULL DEFAULT '',          -- 하위 프로젝트. 구분이 없는 사업은 ''
+    position   INTEGER NOT NULL,
+    form       TEXT NOT NULL,
+    refs_json  TEXT NOT NULL,                     -- [{"kind", "name", "unit"}, ...] — 지표 id가 아니라 이름·단위로 가리킨다(다시 추출해도 유지)
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE (project_id, scope, position)
+);

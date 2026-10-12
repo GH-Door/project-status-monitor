@@ -232,6 +232,32 @@ details summary { cursor: pointer; color: var(--blue); font-size: 13px; }
 .strip .legend span { overflow: visible !important; }
 .details { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
 .anchors { display: flex; gap: 8px; }
+/* ---- 직접 고른 위젯 보드: 작은 카드(숫자·게이지)는 3칸, 그래프는 6칸. 좁아지면 줄어든다 ---- */
+.cboard { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; grid-auto-flow: dense; align-items: stretch; }
+.cb-item { align-self: stretch; }  /* .card 기본값(start)을 덮어 같은 줄의 카드 높이를 맞춘다 */
+.cb-small { grid-column: span 3; } .cb-large { grid-column: span 6; }
+.cboard .gauge.mini { height: 230px; }
+.tile-card { display: flex; flex-direction: column; gap: 6px; padding: 16px; min-height: 140px; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.tile-card h3 { font-size: 14px; color: var(--ink-2); font-weight: 600; }
+.tile-value { font-size: 34px; font-weight: 650; letter-spacing: -0.03em; line-height: 1.15; overflow-wrap: anywhere; }
+.tile-card.missing { border-style: dashed; background: var(--tint); }
+@media (max-width: 1100px) { .cb-small { grid-column: span 6; } .cb-large { grid-column: span 12; } }
+@media (max-width: 599px) { .cb-small, .cb-large { grid-column: span 12; } }
+/* ---- 대시보드 편집 패널: 오른쪽에 고정, 큰 화면에서는 대시보드를 밀어 가리지 않는다 ---- */
+.editor { position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw); background: #fff; border-left: 1px solid var(--line); box-shadow: -8px 0 32px #0085ff1f; z-index: 30; overflow: auto; padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.editor h2:focus { outline: none; }
+.ed-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.ed-sec { display: grid; gap: 8px; }
+.ed-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 260px; overflow: auto; }
+.ed-item { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; border: 1px solid var(--line); border-radius: var(--r-ctl); padding: 6px 8px; min-height: 40px; }
+.ed-item select { min-height: 28px; padding: 2px 6px; font-size: 13px; max-width: 120px; }
+.ed-name { flex: 1 1 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.ed-ops { display: flex; gap: 4px; flex: none; margin-left: auto; }
+.ed-nobox { width: 16px; flex: none; }
+.ed-item input[type=checkbox] { width: 18px; height: 18px; flex: none; }
+.ed-status { min-height: 20px; color: var(--ink-2); } .ed-status.bad { color: var(--bad); font-weight: 600; }
+.ed-foot { display: flex; gap: 8px; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line); position: sticky; bottom: 0; background: #fff; }
+@media (min-width: 1300px) { body.editing .main { margin-right: 440px; } }
 @media (max-height: 800px) and (min-width: 900px) {  /* 낮은 노트북 창: 머리글을 줄여 보드에 높이를 더 준다 */
   .top { padding: 10px 24px; } #view { padding: 12px 24px 24px; }
   .board { --board-h: clamp(500px, calc(100dvh - 128px), 1100px); }
@@ -263,6 +289,15 @@ details summary { cursor: pointer; color: var(--blue); font-size: 13px; }
 .evidence { display: grid; gap: 8px; }
 .ev { border-left: 3px solid var(--blue-soft); padding: 4px 12px; font-size: 13.5px; color: var(--ink-2); }
 .ev strong { color: var(--ink); display: block; font-size: 13px; } .ev img { max-width: 280px; border-radius: 8px; margin-top: 6px; }
+.convo-list { display: grid; gap: 8px; }
+.convo-item { display: flex; align-items: center; gap: 4px; }
+.convo-item a { flex: 1; min-width: 0; padding: 6px 8px; border-radius: var(--r-ctl); color: var(--ink-2); text-decoration: none; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.convo-item a:hover { background: var(--tint); }
+.convo-item a[aria-current="page"] { background: var(--tint); color: var(--blue); font-weight: 600; }
+.thread-empty { display: grid; gap: 6px; padding: 48px 0; justify-items: center; text-align: center; }
+.msg.skeleton { width: min(560px, 100%); gap: 10px; padding: 18px; }
+.msg.skeleton i { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--track) 25%, var(--tint) 50%, var(--track) 75%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .composer { position: sticky; bottom: 0; background: linear-gradient(transparent, #fff 20%); padding-top: 16px; display: grid; gap: 8px; }
 .chips-row { display: flex; gap: 8px; flex-wrap: wrap; }
 /* ---- 레포트 ---- */
@@ -290,4 +325,4 @@ dialog::backdrop { background: #1c1c1c66; }
 @media print {
   .side, .top, .no-print, .toast { display: none !important; } .shell { display: block; } #view { padding: 0; max-width: none; }
 }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

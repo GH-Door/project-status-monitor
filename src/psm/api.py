@@ -26,7 +26,20 @@ from openai import OpenAIError
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from psm import approvals, baseline, budget, dify, ingest, library, llm, metrics, overview, rag
+from psm import (
+    approvals,
+    baseline,
+    budget,
+    conversations,
+    dashboard,
+    dify,
+    ingest,
+    library,
+    llm,
+    metrics,
+    overview,
+    rag,
+)
 from psm.auth import AccessDeniedError, demo_user_id, require_project_access
 from psm.config import (
     ANSWER_MODEL,
@@ -99,6 +112,7 @@ _ERROR_STATUS: list[tuple[type[Exception], int]] = [
     (ingest.IngestRejected, 400),
     (baseline.BaselineError, 400),
     (metrics.MetricNotFoundError, 404),
+    (conversations.ConversationNotFoundError, 404),
     (approvals.MilestoneNotFoundError, 404),
     (approvals.ConcurrentModificationError, 409),
     (approvals.AlreadyApprovedError, 409),
@@ -131,6 +145,7 @@ def _today(as_of: str | None) -> date:
 
 
 AsOf = Annotated[str | None, Query(description="기준일(YYYY-MM-DD). 비우면 오늘(Asia/Seoul)")]
+Scope = Annotated[str | None, Query(max_length=60, description="하위 프로젝트(문서 머리글의 project_id). 비우면 전체")]
 
 
 def _company(conn: sqlite3.Connection, user_id: int, action: str = "read") -> sqlite3.Row:
@@ -146,9 +161,11 @@ def _company(conn: sqlite3.Connection, user_id: int, action: str = "read") -> sq
 
 
 @app.get("/api/company")
-def get_company(as_of: AsOf = None) -> dict:
+def get_company(as_of: AsOf = None, scope: Scope = None) -> dict:
     with _db() as (conn, _):
-        view = overview.company_view(conn, _today(as_of))
+        view = overview.company_view(conn, _today(as_of), scope or None)
+        if not view["empty"]:
+            view["layout"] = dashboard.layout_view(conn, view["company"]["id"], view["scope"] or "")
     return {**view, "llm_ready": llm.api_key_status()["configured"], "rag_dir": str(RAG_DOCS_DIR)}
 
 
@@ -177,6 +194,59 @@ def get_report(as_of: AsOf = None) -> dict:
     with _db() as (conn, user_id):
         project = _company(conn, user_id)
         return overview.build_report(conn, project["id"], _today(as_of))
+
+
+# --- 대시보드에 보일 지표 고르기 ---
+
+_MAX_REF_FIELD = 120  # 이름 길이 상한. 후보 목록에 없는 값은 어차피 거절되지만 큰 입력을 먼저 막는다
+_MAX_INPUT_WIDGETS = 20  # 개수 규칙(8개)은 dashboard.py가 읽기 쉬운 메시지로 거절한다. 여기는 입력 크기 방어선
+
+
+class WidgetRef(BaseModel):
+    kind: Literal["metric", "breakdown", "compare_metric", "compare_breakdown"]
+    name: str = Field(min_length=1, max_length=_MAX_REF_FIELD)
+    unit: str = Field(max_length=20)
+
+
+class Widget(BaseModel):
+    form: str = Field(max_length=20)
+    refs: list[WidgetRef] = Field(max_length=_MAX_INPUT_WIDGETS)
+
+
+class LayoutBody(BaseModel):
+    widgets: list[Widget] = Field(max_length=_MAX_INPUT_WIDGETS)
+
+
+@app.get("/api/dashboard/catalog")
+def get_dashboard_catalog(scope: Scope = None) -> list[dict]:
+    with _db() as (conn, user_id):
+        return dashboard.catalog(conn, _company(conn, user_id)["id"], scope or None)
+
+
+@app.get("/api/dashboard/layout")
+def get_dashboard_layout(scope: Scope = None) -> dict:
+    with _db() as (conn, user_id):
+        widgets = dashboard.load_layout(conn, _company(conn, user_id)["id"], scope or "")
+    return {"scope": scope or None, "custom": widgets is not None, "widgets": widgets or []}
+
+
+@app.put("/api/dashboard/layout")
+def put_dashboard_layout(body: LayoutBody, scope: Scope = None) -> dict:
+    with _db() as (conn, user_id):
+        project = _company(conn, user_id, "approve")
+        try:
+            dashboard.save_layout(conn, project["id"], scope or "", [w.model_dump() for w in body.widgets])
+        except dashboard.LayoutError as error:
+            raise HTTPException(422, str(error)) from None
+        widgets = dashboard.load_layout(conn, project["id"], scope or "")  # 저장된 그대로(표기는 후보 목록 기준으로 맞춰짐)
+    return {"scope": scope or None, "custom": True, "widgets": widgets}
+
+
+@app.delete("/api/dashboard/layout")
+def delete_dashboard_layout(scope: Scope = None) -> dict:
+    with _db() as (conn, user_id):
+        dashboard.clear_layout(conn, _company(conn, user_id, "approve")["id"], scope or "")
+    return {"ok": True}
 
 
 # --- 문서 ---
@@ -272,6 +342,7 @@ def get_asset_image(asset_id: int) -> FileResponse:
 class AskBody(BaseModel):
     question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
     document_ids: list[int] = []
+    conversation_id: int | None = None  # 없으면 새 대화. 이전 대화 내용은 서버가 저장한 것만 쓴다
 
 
 def _evidence_json(item) -> dict:
@@ -292,16 +363,54 @@ def ask(body: AskBody) -> dict:
         project = _company(conn, user_id)
         if not project["dify_dataset_id"]:
             raise HTTPException(409, "아직 Dify 지식베이스가 연결되지 않았습니다. [폴더 동기화]를 먼저 하세요.")
+        prior = None
+        if body.conversation_id is not None:
+            conversations.get(conn, body.conversation_id, user_id, project["id"])  # 소유자·사업 확인
+            prior = conversations.history(conn, body.conversation_id)
         answer = rag.answer_question(
             conn, user_id, project["id"], project["dify_dataset_id"], body.question,
-            body.document_ids or None,
+            body.document_ids or None, history=prior,
         )
+        evidence = [_evidence_json(e) for e in answer.evidence]
+        conversation_id = None if answer.errored else _save_turn(conn, user_id, project["id"], body, answer, evidence)
     return {
         "answer": answer.text,
         "abstained": answer.abstained,
         "abstain_reason": answer.abstain_reason,
-        "evidence": [_evidence_json(e) for e in answer.evidence],
+        "evidence": evidence,
+        "conversation_id": conversation_id,
+        "rewritten_query": answer.rewritten_query,
     }
+
+
+def _save_turn(conn: sqlite3.Connection, user_id: int, project_id: int, body: AskBody, answer, evidence: list[dict]) -> int:
+    """질문·답을 대화에 저장한다. 장애로 못 답한 턴은 저장하지 않아 다시 물어도 맥락이 오염되지 않는다."""
+    conversation_id = body.conversation_id or conversations.create(conn, project_id, user_id, body.question)
+    conversations.add_message(conn, conversation_id, "user", body.question)
+    conversations.add_message(
+        conn, conversation_id, "assistant", answer.text, rewritten_query=answer.rewritten_query,
+        evidence=evidence, abstained=answer.abstained, abstain_reason=answer.abstain_reason,
+    )
+    return conversation_id
+
+
+@app.get("/api/conversations")
+def list_conversations() -> list[dict]:
+    with _db() as (conn, user_id):
+        return conversations.list_for(conn, user_id, _company(conn, user_id)["id"])
+
+
+@app.get("/api/conversations/{conversation_id}")
+def get_conversation(conversation_id: int) -> dict:
+    with _db() as (conn, user_id):
+        return conversations.get(conn, conversation_id, user_id, _company(conn, user_id)["id"])
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int) -> dict:
+    with _db() as (conn, user_id):
+        conversations.delete(conn, conversation_id, user_id, _company(conn, user_id)["id"])
+    return {"ok": True}
 
 
 # --- 확인 필요 ---

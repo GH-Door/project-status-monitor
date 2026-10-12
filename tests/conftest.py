@@ -37,3 +37,16 @@ def seed_milestone(conn):
         return cur.lastrowid
 
     return _seed
+
+
+@pytest.fixture(autouse=True)
+def _verifier_passes_by_default(monkeypatch, request):
+    """답변 검증 호출은 네트워크를 쓰므로 기본은 통과로 막아 둔다. 검증을 시험하는 테스트가 따로 바꾼다."""
+    from psm import llm
+
+    if request.module.__name__.endswith("test_llm"):
+        return  # llm.verify_answer 자체를 시험하는 파일
+
+    monkeypatch.setattr(
+        llm, "verify_answer", lambda *a, **k: (llm.VerifyResult(matches=True, reason=""), llm.Usage(10, 5))
+    )

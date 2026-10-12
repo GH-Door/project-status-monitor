@@ -194,7 +194,11 @@ def extract_kpis_once(
         return None  # 반출 승인이 없는 문서는 외부 AI로 보내지 않는다
     if _UNAPPROVED_MARK in _nfc(done["filename"]):
         return None  # 미승인 문서는 검색에는 쓰여도 공식 지표를 만들지 않는다
-    result = kpi.extract_and_save(conn, project_id, document_id, path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    status = ingest.header_status(text)
+    if status and status != ingest.CURRENT_STATUS:
+        return None  # 과거판·초안·승인 대기 문서의 값이 회사 공식 지표로 올라오지 않게 한다
+    result = kpi.extract_and_save(conn, project_id, document_id, text)
     if result.error is None or result.permanent:  # 다시 해도 같은 오류면 동기화마다 과금하지 않는다
         conn.execute(
             "UPDATE documents SET kpi_extracted_at = ? WHERE id = ?",
@@ -296,12 +300,17 @@ def refresh_kpis(conn: sqlite3.Connection, project_id: int) -> SyncResult:
     conn.execute("UPDATE documents SET kpi_extracted_at = NULL WHERE project_id = ?", (project_id,))
     conn.commit()
     tally = _Tally()
-    for row in conn.execute("SELECT id FROM documents WHERE project_id = ? ORDER BY id", (project_id,)).fetchall():
-        try:
-            tally.add_kpi(extract_kpis_once(conn, project_id, row["id"], ingest.document_storage_path(conn, row["id"])))
-        except (OSError, ValueError):
-            logger.exception("document=%s 지표 다시 뽑기 실패", row["id"])
-            tally.notes.append("읽을 수 없는 문서가 있어 건너뛰었습니다")
+    try:
+        for row in conn.execute("SELECT id FROM documents WHERE project_id = ? ORDER BY id", (project_id,)).fetchall():
+            try:
+                tally.add_kpi(extract_kpis_once(conn, project_id, row["id"], ingest.document_storage_path(conn, row["id"])))
+            except (OSError, ValueError):
+                logger.exception("document=%s 지표 다시 뽑기 실패", row["id"])
+                tally.notes.append("읽을 수 없는 문서가 있어 건너뛰었습니다")
+    except Exception:
+        conn.rollback()  # 예상하지 못한 오류(DB 오류 등)여도 기존 값을 되돌려 놓고 예외는 그대로 알린다
+        _restore_ai_values(conn, project_id, snapshot)
+        raise
     if tally.notes:
         _restore_ai_values(conn, project_id, snapshot)
         return SyncResult(notes=tuple(tally.notes))

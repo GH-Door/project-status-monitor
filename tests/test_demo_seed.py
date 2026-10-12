@@ -1,4 +1,4 @@
-"""demo_seed 테스트 — 명세(docs/design/mock-data.md)의 진척률·경고·팀 구성이 그대로 나오는지 확인한다."""
+"""demo_seed 테스트 — 명세(demo_seed.DEMO_PROJECTS)의 진척률·경고·팀 구성이 그대로 나오는지 확인한다."""
 
 from datetime import date
 

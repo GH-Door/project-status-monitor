@@ -21,15 +21,16 @@ const fitChars = (slot) => Math.max(3, Math.floor(slot / 6.6));  // 칸 폭에 �
 // 글자 폭 어림: 한글 11px, 숫자·기호 6.2px (11px 글꼴 기준)
 const textWidth = (text) => [...text].reduce((w, ch) => w + (/[가-힣]/.test(ch) ? 11 : 6.2), 0);
 
-function scaffold(width, height, max, unit, right = 14) {
+function scaffold(width, height, max, unit, right = 14, min = 0) {  // min < 0이면 0선 아래로도 눈금을 둔다 (감액 같은 마이너스 값)
   const steps = height < 150 ? 2 : 4;  // 낮은 카드는 눈금을 줄여 글자가 겹치지 않게
-  const ticks = Array.from({ length: steps + 1 }, (_, i) => compact((max / steps) * i, unit));
+  const at = (i) => min + ((max - min) / steps) * i;
+  const ticks = Array.from({ length: steps + 1 }, (_, i) => compact(at(i), unit));
   const left = Math.max(40, Math.min(84, 14 + Math.max(...ticks.map(textWidth))));  // 눈금 글자가 잘리지 않게
   const m = width < 420 ? { l: left, r: right, t: 10, b: 28 } : { l: left, r: right, t: 14, b: 32 };
   const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, class: "chart-svg", role: "img" });
-  const y = (v) => m.t + (1 - v / max) * (height - m.t - m.b);
+  const y = (v) => m.t + (1 - (v - min) / (max - min)) * (height - m.t - m.b);
   for (let i = 0; i <= steps; i++) {
-    const v = (max / steps) * i;
+    const v = at(i);
     root.append(svg("line", { x1: m.l, x2: width - m.r, y1: y(v), y2: y(v), stroke: "#eef0f3", "stroke-width": 1 }));
     const tick = svg("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end", class: "axis" });
     tick.textContent = compact(v, unit);
@@ -41,8 +42,9 @@ function scaffold(width, height, max, unit, right = 14) {
 // 세로 묶음 막대: 두께 ≤ 28, 위쪽 끝만 4px 둥글게, 막대 사이 2px. 값 라벨은 막대가 적을 때만.
 export function columnChart({ labels, series, unit, ariaLabel, height = 250, width = 480 }) {
   const shown = series.slice(0, MAX_SERIES);
-  const max = niceMax(Math.max(...shown.flatMap((s) => s.values.filter((v) => v != null)), 1));
-  const { root, m, y } = scaffold(width, height, max, unit);
+  const values = shown.flatMap((s) => s.values.filter((v) => v != null));
+  const max = niceMax(Math.max(...values, 1)), lowest = Math.min(...values, 0), min = lowest < 0 ? -niceMax(-lowest) : 0;
+  const { root, m, y } = scaffold(width, height, max, unit, 14, min);
   root.setAttribute("aria-label", ariaLabel);
   const slot = (width - m.l - m.r) / labels.length, barW = Math.min(labels.length <= 2 ? 56 : 28, (slot * 0.72) / shown.length - 2), base = y(0);
   const labelEvery = shown.length * labels.length <= 8 && shown.every((s) => s.values.every((v) => v == null || textWidth(compact(v, unit)) <= barW + 8));  // 값 글자가 막대보다 넓어 겹치면 툴팁에만
@@ -50,12 +52,14 @@ export function columnChart({ labels, series, unit, ariaLabel, height = 250, wid
     const start = m.l + i * slot + (slot - (barW + 2) * shown.length + 2) / 2;
     shown.forEach((s, j) => {
       const v = s.values[i];
-      if (v == null || v <= 0) return;
+      if (v == null || v === 0) return;
       const x = start + j * (barW + 2), top = y(v), r = Math.min(4, barW / 2);
-      const bar = svg("path", { fill: s.color ?? seriesColor(j), d: `M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${base} Z` });
-      root.append(withTip(bar, fmtValue(v, unit), `${s.name} · ${label}`));
+      const d = v > 0
+        ? `M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${base} Z`
+        : `M${x},${base} V${top - r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top - r} V${base} Z`;  // 마이너스는 0선 아래로, 끝만 둥글게
+      root.append(withTip(svg("path", { fill: s.color ?? seriesColor(j), d }), fmtValue(v, unit), `${s.name} · ${label}`));
       if (labelEvery) {
-        const t = svg("text", { x: x + barW / 2, y: top - 6, "text-anchor": "middle", class: "val-label" });
+        const t = svg("text", { x: x + barW / 2, y: v > 0 ? top - 6 : top + 14, "text-anchor": "middle", class: "val-label" });
         t.textContent = compact(v, unit);
         root.append(t);
       }

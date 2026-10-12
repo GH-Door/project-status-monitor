@@ -14,9 +14,10 @@ from psm.config import DIFY_API_BASE, DIFY_DATASET_API_KEY
 from psm.logging_config import get_logger, log_timing
 
 _QUERY_MAX_LEN = 250  # Dify retrieve API 제약
-# ponytail: "automatic" 대신 큰 max_tokens로 고정해 1페이지=1세그먼트를 유지한다(페이지 단위
-# 청킹이 rag.py의 근거 단위 가정이라서). 실제 페이지가 이보다 길면 Dify가 다시 쪼갤 수 있는데,
-# 그 경우는 rag.py의 병합 로직(같은 페이지 히트를 합치기)이 근거 누락을 막아준다.
+# ponytail: 구분자를 "\n"으로 둬서 문서가 줄 단위(실측 6~180자)로 쪼개진다 — 마크다운 문서 1건이
+# 세그먼트 약 27개가 된다. "1페이지=1세그먼트"가 아니다. 같은 문서·쪽의 히트는 rag.py가 합쳐 근거 1건으로
+# 만들지만, 답변 모델은 문서 전체가 아니라 검색된 줄만 받는다(표 행이 머리글 없이 전달될 수 있음).
+# 쪼개는 기준을 바꾸면 이 가정과 rag.py의 병합 로직을 함께 점검할 것(docs/troubleshooting.md 참고).
 _SEGMENT_MAX_TOKENS = 2000
 
 logger = get_logger("dify")

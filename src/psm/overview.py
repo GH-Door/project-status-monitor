@@ -23,13 +23,17 @@ from psm.progress import calc_actual, calc_gap, calc_planned
 STATES = ("지연", "주의", "갱신필요", "정보부족", "정상")  # 앞쪽이 더 위험하다
 CATEGORY_ORDER = ("매출", "수익성", "비용", "운영", "일정", "기타")
 _HISTORY_LIMIT = 5
-_HIGHLIGHT_COUNT = 4
+_HIGHLIGHT_COUNT = 8  # 첫 화면 위젯 상한
+_HIGHLIGHTS_PER_CATEGORY = 2  # 한 카테고리가 첫 화면을 독점하지 못하게
 _MIN_HIGHLIGHT_IMPORTANCE = 4
 _BREAKDOWN_COUNT = 4
 _BREAKDOWNS_PER_DOCUMENT = 2  # 한 문서의 표가 자리를 독점하지 못하게
 _GROUPS_SHOWN = 12  # 첫 화면에 못 올라간 표는 하단 갤러리로 간다
 _MIN_SHARED_LABELS = 2  # 표 두 개를 한 차트로 합치려면 겹치는 항목이 이만큼은 있어야 한다
 _SHARE_MAX_PARTS = 7  # 도넛으로 나눠 보여줄 수 있는 구성 요소 수의 상한
+_MIN_COMPARE_SCOPES = 3  # 하위 프로젝트가 이만큼 이상 가진 지표·표만 견준다 (둘뿐이면 비교가 아니라 나열)
+_COMPARE_SERIES = 3  # 비교 막대 한 차트에 올릴 지표 수의 상한
+_COMPARE_PARTS = 6  # 비교 누적 막대에 쌓을 구성 요소 수의 상한
 _MONTH_LABEL = re.compile(r"\d{1,2}월")
 _DIMENSION = re.compile(r"^(?P<dim>\S.*?별)\s+(?P<measure>.+)$")  # '채널별 출고 수량' → 채널별 / 출고 수량
 _SHARE_HINT = re.compile(r"구성|분배|비중|내역|구분|배분")
@@ -163,18 +167,20 @@ def _history(conn: sqlite3.Connection, project_id: int, limit: int | None = None
 
 
 def _identity(row) -> str:
-    return row["key"] if row["source"] == "rule" else "llm:" + re.sub(r"\s+", "", row["label"] or row["key"])
+    if row["source"] == "rule":
+        return row["key"]
+    return f"llm:{row['scope'] or ''}:" + re.sub(r"\s+", "", row["label"] or row["key"])  # 같은 이름도 하위 프로젝트가 다르면 다른 지표
 
 
-def _published_rows(conn: sqlite3.Connection, project_id: int) -> list[dict]:
-    """반영된 지표 중 지표마다 가장 늦은 기간의 값 하나씩."""
+def _published_rows(conn: sqlite3.Connection, project_id: int, scope: str | None = None) -> list[dict]:
+    """반영된 지표 중 지표마다 가장 늦은 기간의 값 하나씩. scope를 주면 그 하위 프로젝트의 지표만."""
     rows = conn.execute(
         "SELECT m.id, m.key, m.label, m.category, m.value, m.unit, m.period, m.source, m.importance, "
-        "m.evidence_text, m.approved_by, d.filename "
+        "m.evidence_text, m.approved_by, m.scope, d.filename "
         "FROM business_metrics m JOIN documents d ON d.id = m.document_id "
-        "WHERE m.project_id = ? AND m.status = 'approved' "
+        "WHERE m.project_id = ? AND m.status = 'approved' AND (? IS NULL OR m.scope = ?) "
         "ORDER BY COALESCE(m.period, ''), m.id",
-        (project_id,),
+        (project_id, scope, scope),
     ).fetchall()
     # 규칙 지표는 key로, AI 지표는 이름(공백 무시)으로 묶는다 — 기간이 달라도 같은 지표의 가장 늦은 값만 남는다
     return list({_identity(row): dict(row) for row in rows}.values())
@@ -255,19 +261,33 @@ def _table_row(row: dict) -> dict:
         "document": _nfc(row["filename"]),
         "evidence": row["evidence_text"],
         "importance": row["importance"],
+        "scope": row["scope"],
     }
 
 
-def kpi_view(conn: sqlite3.Connection, project_id: int) -> dict:
-    rows = _published_rows(conn, project_id)
+def _pick_highlights(ranked: list[dict]) -> list[dict]:
+    """순위대로 훑되 카테고리당 _HIGHLIGHTS_PER_CATEGORY개, 전체 _HIGHLIGHT_COUNT개까지."""
+    taken: dict[str, int] = {}
+    picked = []
+    for row in ranked:
+        category = row["category"] or "기타"
+        if taken.get(category, 0) >= _HIGHLIGHTS_PER_CATEGORY:
+            continue
+        taken[category] = taken.get(category, 0) + 1
+        picked.append(row)
+    return picked[:_HIGHLIGHT_COUNT]
+
+
+def kpi_view(conn: sqlite3.Connection, project_id: int, scope: str | None = None) -> dict:
+    rows = _published_rows(conn, project_id, scope)
     core = {row["key"]: row for row in rows if row["source"] == "rule"}
     extras = _dedupe_extras(core, [r for r in rows if r["source"] != "rule"])
     ranked = sorted(extras, key=lambda r: (r["category"] in _COVERED_CATEGORIES, -r["importance"], r["id"]))
-    highlights = [r for r in ranked if r["importance"] >= _MIN_HIGHLIGHT_IMPORTANCE][:_HIGHLIGHT_COUNT]
+    highlights = _pick_highlights([r for r in ranked if r["importance"] >= _MIN_HIGHLIGHT_IMPORTANCE])
     margin = _group(core, {"rate": "gross_margin_rate", "profit": "gross_profit"})
     trend = {key: [{"period": p, "value": v} for p, v in metrics.history(conn, project_id, key)] for key in _TREND_KEYS}
     for row in highlights:  # AI 지표는 이름으로 기간을 잇는다
-        trend[row["key"]] = [{"period": p, "value": v} for p, v in metrics.history_by_label(conn, project_id, row["label"] or row["key"])]
+        trend[row["key"]] = [{"period": p, "value": v} for p, v in metrics.history_by_label(conn, project_id, row["label"] or row["key"], row["scope"])]
     return {
         "sales": _group(core, {"net_sales": "net_sales", "sales_target": "sales_target",
                                "achievement_rate": "achievement_rate"}),
@@ -284,23 +304,24 @@ def kpi_view(conn: sqlite3.Connection, project_id: int) -> dict:
     }
 
 
-def _latest_breakdowns(conn: sqlite3.Connection, project_id: int) -> list[dict]:
-    """같은 이름의 표는 가장 늦은 기간 하나만."""
+def _latest_breakdowns(conn: sqlite3.Connection, project_id: int, scope: str | None = None) -> list[dict]:
+    """같은 이름의 표는 (하위 프로젝트별로) 가장 늦은 기간 하나만."""
     rows = conn.execute(
-        "SELECT b.id, b.name, b.unit, b.period, b.rows_json, b.importance, d.filename "
+        "SELECT b.id, b.name, b.unit, b.period, b.rows_json, b.importance, b.scope, d.filename "
         "FROM kpi_breakdowns b JOIN documents d ON d.id = b.document_id "
-        "WHERE b.project_id = ? AND b.status = 'approved' ORDER BY COALESCE(b.period, ''), b.id",
-        (project_id,),
+        "WHERE b.project_id = ? AND b.status = 'approved' AND (? IS NULL OR b.scope = ?) "
+        "ORDER BY COALESCE(b.period, ''), b.id",
+        (project_id, scope, scope),
     ).fetchall()
     return [
         {**dict(r), "document": _nfc(r["filename"]), "rows": sorted(json.loads(r["rows_json"]), key=lambda x: -x["value"])}
-        for r in {row["name"]: row for row in rows}.values()
+        for r in {(row["name"], row["scope"]): row for row in rows}.values()
     ]
 
 
-def breakdown_view(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+def breakdown_view(conn: sqlite3.Connection, project_id: int, scope: str | None = None) -> list[dict]:
     """레포트용: 중요도 순으로 몇 개만, 한 문서에서 너무 많이 가져오지 않는다."""
-    ranked = sorted(_latest_breakdowns(conn, project_id), key=lambda r: (-r["importance"], -len(r["rows"])))
+    ranked = sorted(_latest_breakdowns(conn, project_id, scope), key=lambda r: (-r["importance"], -len(r["rows"])))
     per_document: dict[str, int] = {}
     shown = []
     for row in ranked:
@@ -334,11 +355,11 @@ def _build_group(title: str, items: list[dict], dimensional: bool) -> dict:
     }
 
 
-def chart_groups(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+def chart_groups(conn: sqlite3.Connection, project_id: int, scope: str | None = None) -> list[dict]:
     """표들을 차트 단위로 묶는다. '채널별 …'처럼 기준이 같고 단위도 같고 항목이 겹치면 한 차트에 여러 계열로."""
     buckets: dict[tuple, list[list[dict]]] = {}
     standalone: list[dict] = []
-    for item in sorted(_latest_breakdowns(conn, project_id), key=lambda r: (-r["importance"], r["id"])):
+    for item in sorted(_latest_breakdowns(conn, project_id, scope), key=lambda r: (-r["importance"], r["id"])):
         match = _DIMENSION.match(item["name"])
         if not match:
             standalone.append(item)
@@ -351,6 +372,92 @@ def chart_groups(conn: sqlite3.Connection, project_id: int) -> list[dict]:
     groups += [_build_group(item["name"], [item], False) for item in standalone]
     groups.sort(key=lambda g: (-g["importance"], -len(g["series"]), g["title"]))
     return groups[:_GROUPS_SHOWN]
+
+
+def _compare_group(title: str, unit: str, labels: list[str], series: list[dict], *, kind: str,
+                   periods: list[str], scope_count: int, importance: int) -> dict:
+    return {"title": title, "unit": unit, "kind": kind, "labels": labels, "series": series,
+            "period": max(periods) if periods else None, "document": f"{scope_count}개 프로젝트 비교",
+            "importance": importance, "compare": True}
+
+
+def _compare_metric_entries(conn: sqlite3.Connection, project_id: int) -> dict[tuple[str, str], dict]:
+    """하위 프로젝트가 있는 AI 지표를 (이름, 단위)별로: 프로젝트마다 가장 늦은 값."""
+    entries: dict[tuple[str, str], dict] = {}
+    for row in _published_rows(conn, project_id):
+        if row["source"] == "rule" or not row["scope"]:
+            continue
+        entry = entries.setdefault((re.sub(r"\s+", "", row["label"] or row["key"]), row["unit"]),
+                                   {"label": row["label"] or row["key"], "unit": row["unit"], "values": {}, "periods": [], "importance": 0})
+        entry["values"][row["scope"]] = row["value"]
+        entry["periods"] += [row["period"]] if row["period"] else []
+        entry["importance"] = max(entry["importance"], row["importance"])
+    return entries
+
+
+def _compare_metric_chart(items: list[dict]) -> dict:
+    """같은 단위의 지표들을 프로젝트별 막대 한 차트(지표마다 계열)로."""
+    scopes = sorted({s for e in items for s in e["values"]})
+    return _compare_group(
+        "프로젝트별 " + "·".join(e["label"] for e in items), items[0]["unit"], scopes,
+        [{"name": e["label"], "values": [e["values"].get(s) for s in scopes]} for e in items],
+        kind="bars", periods=[p for e in items for p in e["periods"]], scope_count=len(scopes),
+        importance=max(e["importance"] for e in items))
+
+
+def _compare_metric_families(conn: sqlite3.Connection, project_id: int) -> list[tuple[int, list[dict]]]:
+    """여러 하위 프로젝트에 있는 AI 지표를 단위별로 묶어 프로젝트 막대로. 단위가 같은 지표는 한 차트에 계열로."""
+    by_unit: dict[str, list[dict]] = {}
+    for entry in _compare_metric_entries(conn, project_id).values():
+        if len(entry["values"]) >= _MIN_COMPARE_SCOPES:
+            by_unit.setdefault(entry["unit"], []).append(entry)
+    families = []
+    for items in by_unit.values():
+        chart = _compare_metric_chart(sorted(items, key=lambda e: (-e["importance"], -len(e["values"]), e["label"]))[:_COMPARE_SERIES])
+        families.append((chart["importance"], [chart]))
+    return families
+
+
+def _compare_breakdown_charts(name: str, unit: str, items: list[dict]) -> list[dict]:
+    """같은 표를 가진 하위 프로젝트들(items)의 프로젝트별 누적 막대. 합쳐 볼 수 있으면 전체 구성비 도넛도 뒤에 붙는다."""
+    by_scope = {i["scope"]: {r["label"]: r["value"] for r in i["rows"]} for i in items}
+    totals: dict[str, float] = {}
+    seen: dict[str, int] = {}
+    for rows in by_scope.values():
+        for label, value in rows.items():
+            totals[label] = totals.get(label, 0) + value
+            seen[label] = seen.get(label, 0) + 1
+    parts = sorted((l for l in totals if seen[l] >= _MIN_COMPARE_SCOPES), key=lambda l: -totals[l])[:_COMPARE_PARTS]
+    if not parts:
+        return []
+    scopes = sorted(by_scope)
+    meta = {"periods": [i["period"] for i in items if i["period"]], "scope_count": len(scopes), "importance": max(i["importance"] for i in items)}
+    charts = [_compare_group(f"프로젝트별 {name}", unit, scopes,
+                             [{"name": p, "values": [by_scope[s].get(p) for s in scopes]} for p in parts], kind="bars", **meta)]
+    no_negative = all(v >= 0 for rows in by_scope.values() for v in rows.values())
+    if no_negative and 3 <= len(parts) <= _SHARE_MAX_PARTS:  # 음수가 섞인 합계는 구성비가 아니다
+        charts.append(_compare_group(f"전체 {name} 구성", unit, parts, [{"name": name, "values": [totals[p] for p in parts]}], kind="share", **meta))
+    return charts
+
+
+def _compare_breakdown_families(conn: sqlite3.Connection, project_id: int) -> list[tuple[int, list[dict]]]:
+    """여러 하위 프로젝트에 같은 표가 있으면 프로젝트별 누적 막대, 합쳐 볼 수 있으면 전체 구성비 도넛도."""
+    named: dict[tuple[str, str], list[dict]] = {}
+    for item in _latest_breakdowns(conn, project_id):
+        if item["scope"]:
+            named.setdefault((item["name"], item["unit"]), []).append(item)
+    families = []
+    for (name, unit), items in named.items():
+        charts = _compare_breakdown_charts(name, unit, items) if len(items) >= _MIN_COMPARE_SCOPES else []
+        if charts:
+            families.append((charts[0]["importance"], charts))
+    return families
+
+
+def compare_groups(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+    """하위 프로젝트끼리 견주는 차트들. 같은 지표·표가 _MIN_COMPARE_SCOPES개 이상의 프로젝트에 있을 때만."""
+    families = [*_compare_metric_families(conn, project_id), *_compare_breakdown_families(conn, project_id)]
+    return [g for _, family in sorted(families, key=lambda f: -f[0]) for g in family]
 
 
 def _kst_date(timestamp: str) -> date:
@@ -397,13 +504,26 @@ def _count(conn: sqlite3.Connection, sql: str, project_id: int) -> int:
     return conn.execute(sql, (project_id,)).fetchone()[0]
 
 
-def company_view(conn: sqlite3.Connection, today: date) -> dict:
-    """회사 하나의 대시보드 전체. 회사가 아직 없으면 {"empty": True}."""
+def _scopes(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+    """반영된 지표가 있는 하위 프로젝트와 지표 수. 머리글이 없는 문서(공통)는 넣지 않는다."""
+    rows = conn.execute(
+        "SELECT scope, COUNT(*) AS count FROM business_metrics "
+        "WHERE project_id = ? AND status = 'approved' AND scope IS NOT NULL GROUP BY scope ORDER BY scope",
+        (project_id,),
+    ).fetchall()
+    return [{"scope": r["scope"], "count": r["count"]} for r in rows]
+
+
+def company_view(conn: sqlite3.Connection, today: date, scope: str | None = None) -> dict:
+    """회사 하나의 대시보드 전체. 회사가 아직 없으면 {"empty": True}. scope를 주면 그 하위 프로젝트의 지표·표만."""
     project = library.company_project(conn)
     if project is None:
         return {"empty": True, "as_of": today.isoformat()}
     card = project_card(conn, project, today)
     pid = project["id"]
+    scopes = _scopes(conn, pid)
+    if scope is None and scopes:  # 고르지 않으면 지표가 가장 많은 하위 프로젝트 — 여러 프로젝트 값이 섞이지 않게
+        scope = max(scopes, key=lambda s: s["count"])["scope"]
     return {
         "empty": False,
         "as_of": today.isoformat(),
@@ -411,9 +531,11 @@ def company_view(conn: sqlite3.Connection, today: date) -> dict:
         "state": card["state"],
         "reasons": card["reasons"],
         "progress": card["progress"],
-        "kpis": kpi_view(conn, pid),
-        "breakdowns": breakdown_view(conn, pid),
-        "charts": {"monthly": _monthly_sales(conn, pid), "groups": chart_groups(conn, pid),
+        "scope": scope,
+        "scopes": scopes,
+        "kpis": kpi_view(conn, pid, scope),
+        "breakdowns": breakdown_view(conn, pid, scope),
+        "charts": {"monthly": _monthly_sales(conn, pid), "groups": [*chart_groups(conn, pid, scope), *compare_groups(conn, pid)],
                    "progress_curve": _progress_curve(conn, pid, today)},
         "milestones": _milestone_rows(conn, pid, today),
         "history": _history(conn, pid, _HISTORY_LIMIT * 2),
