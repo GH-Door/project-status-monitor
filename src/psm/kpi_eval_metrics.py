@@ -136,11 +136,15 @@ def compare_reports(a: dict, b: dict) -> dict:
     return out
 
 
-FAILURE_TYPES = ("retrieval_miss", "generation_error", "abstain_error", "citation_error", "gold_suspect", "system_error")
+FAILURE_TYPES = ("retrieval_miss", "generation_error", "abstain_error", "citation_error", "gold_suspect", "system_error",
+                 "general_missed", "misrouted_general", "general_wrong")
+
+
+GENERAL_KINDS = ("general", "web")  # 문서 근거 없이 나간 답: 일반 지식, 웹 검색
 
 
 def classify_failure(qtype: str, *, context_hit: bool | None, correct: bool, risky: bool, citation_ok: bool | None,
-                     errored: bool = False) -> str | None:
+                     errored: bool = False, answer_kind: str = "document") -> str | None:
     """문항 하나가 왜 틀렸는지(멘토의 원인 분리). 정상이면 None.
 
     context_hit은 정답 문서가 모델에게 준 문서 안에 있었는지다. 모델은 상위 5개가 아니라 ANSWER_CONTEXT_DOCS개를 보므로
@@ -149,6 +153,14 @@ def classify_failure(qtype: str, *, context_hit: bool | None, correct: bool, ris
     """
     if errored:
         return "system_error"
+    if qtype in ("general", "web"):
+        # 일반 질문은 문서 근거 없는 답으로, 웹 질문은 웹 검색 답으로 나가야 한다. 경로가 틀리면 놓친 것(웹 질문을 아는 지식으로 답한 것 포함)
+        right_route = answer_kind in GENERAL_KINDS if qtype == "general" else answer_kind == "web"
+        if not right_route:
+            return "general_missed"
+        return None if correct else "general_wrong"  # 경로는 맞는데 답이 틀림
+    if answer_kind in GENERAL_KINDS:  # 문서 질문(답변 가능·유보)이 일반·웹 답변으로 샜다 — 지어낸 값이 나갈 수 있어 가장 나쁜 실패
+        return "misrouted_general"
     if qtype == "abstain":
         return "abstain_error" if risky else None
     if not correct:

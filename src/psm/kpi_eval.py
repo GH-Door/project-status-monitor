@@ -30,6 +30,7 @@ import hashlib
 import json
 import math
 import sqlite3
+import statistics
 import sys
 import time
 import unicodedata
@@ -45,6 +46,7 @@ from psm.config import DB_PATH
 from psm.db import connect
 from psm.kpi_eval_metrics import (
     FAILURE_TYPES,
+    GENERAL_KINDS,
     chance_hit_at_k,
     classify_failure,
     compare_reports,
@@ -57,7 +59,7 @@ from psm.kpi_eval_metrics import (
 )
 from psm.models import EvidenceItem
 
-QUESTION_TYPES = {"answerable", "abstain"}
+QUESTION_TYPES = {"answerable", "abstain", "general", "web"}  # general: 회사와 상관없는 질문 — 일반 답변 / web: 회사와 상관없지만 검색이 필요한 질문 — 웹 답변
 LEVELS = {f"L{n}" for n in range(1, 9)}  # L8: 파생 계산(허용·금지 함정)
 SPLITS = {"dev", "test"}
 UNSPECIFIED_LEVEL = "unspecified"
@@ -105,6 +107,10 @@ class QuestionResult:
     abstain_reason: str | None = None  # 유보한 이유(과잉 유보 원인 진단용)
     context_hit: bool | None = None  # 정답 문서가 모델에게 준 문서(ANSWER_CONTEXT_DOCS개) 안에 있었나. answerable만
     failure_type: str | None = None  # 원인 분리(검색 실패·생성 실패·유보 실패·인용 실패·정답 문서 의심·장애). 정상이면 None
+    answer_kind: str = "document"  # "general"이면 문서 근거 없이 일반 지식으로 답한 것
+    route_ok: bool | None = None  # 올바른 경로로 나갔나(경로 정답). correct는 최종 답까지 맞아야 한다 — 둘을 따로 본다
+    content_graded: bool = False  # 답의 내용을 채점했나. 일반·웹 질문에 기대 키워드가 없으면 경로만 본 것이다
+    stage_s: dict = field(default_factory=dict)  # 단계별 시간(초): 재작성·분류·검색·답변 등
 
 
 def _validate_keywords(qid: str, raw: dict) -> None:
@@ -183,6 +189,7 @@ def run_eval(
 
         rank = hit = hit1 = context_hit = citation_ok = None
         retrieval_s = 0.0
+        general_answer = answer.kind in GENERAL_KINDS
         if q.type == "answerable":  # 후속 질문의 검색 적중은 실제로 검색에 쓴 독립 질문으로 잰다
             start = time.perf_counter()
             # 모델이 실제로 받는 문서 수만큼 본다 — Hit@5는 그 앞 5개, context_hit은 전부(원인 분리의 기준)
@@ -197,16 +204,27 @@ def run_eval(
         keywords_ok = keywords_match(answer.text, q.expected_keywords)
         forbidden = forbidden_present(answer.text, q.forbidden_keywords)
         wrong = risky = partial = False
-        if q.type == "answerable":
-            correct = (not answer.abstained) and keywords_ok and not forbidden
+        route_ok = None
+        content_graded = False
+        if q.type in ("general", "web"):
+            route_ok = answer.kind == ("general" if q.type == "general" else "web")
+            content_graded = bool(q.expected_keywords)
+            answered = not answer.abstained and not answer.errored and bool(answer.text.strip())
+            right_route = general_answer if q.type == "general" else answer.kind == "web"
+            correct = right_route and answered and (keywords_ok or not content_graded)
+            needs_human = False
+        elif q.type == "answerable":
+            route_ok = answer.kind == "document"
+            correct = (not answer.abstained) and keywords_ok and not forbidden and not general_answer  # 일반 답변은 키워드가 맞아도 정답이 아니다
             wrong = (not answer.abstained) and not correct
             partial = wrong and not forbidden and _is_partial(answer.text, q.expected_keywords)
             needs_human = wrong and not forbidden  # 금지 키워드가 나온 건 사람이 볼 것도 없이 오답
         else:
+            route_ok = answer.kind == "document"
             correct, needs_human = answer.abstained and not answer.errored, False  # 장애로 못 답한 건 유보 성공이 아니다
-            risky = not answer.abstained
+            risky = not answer.abstained  # 일반 답변으로 답한 것도 포함 — 유보해야 하는 질문에 답을 낸 것이다
         failure_type = classify_failure(q.type, context_hit=context_hit, correct=correct, risky=risky,
-                                        citation_ok=citation_ok, errored=answer.errored)
+                                        citation_ok=citation_ok, errored=answer.errored, answer_kind=answer.kind)
         results.append(
             QuestionResult(q.id, q.category, q.type, hit, answer.abstained, correct,
                            needs_human, round(latency, 2), answer.text, followup=bool(q.history),
@@ -214,7 +232,8 @@ def run_eval(
                            risky=risky, forbidden_hit=forbidden, citation_ok=citation_ok,
                            retrieval_s=round(retrieval_s, 3), partial=partial,
                            abstain_reason=answer.abstain_reason if answer.abstained else None,
-                           context_hit=context_hit, failure_type=failure_type)
+                           context_hit=context_hit, failure_type=failure_type, answer_kind=answer.kind,
+                           route_ok=route_ok, content_graded=content_graded, stage_s=dict(answer.timings))
         )
     return results
 
@@ -260,7 +279,8 @@ def _play_history(
     turns: list[dict] = []
     for question in previous:
         answer = answer_fn(conn, user_id, project_id, dataset_id, question, None, turns or None)
-        turns += [{"role": "user", "content": question}, {"role": "assistant", "content": answer.text or "(근거를 찾지 못해 답변을 유보함)"}]
+        turns += [{"role": "user", "content": question, "kind": answer.kind},  # 서비스가 대화에 저장하는 종류를 따라간다
+                  {"role": "assistant", "content": answer.text or "(근거를 찾지 못해 답변을 유보함)", "kind": answer.kind}]
     return turns
 
 
@@ -304,9 +324,31 @@ def _ci95(values: list[bool]) -> list[float] | None:
     return list(interval) if interval else None
 
 
+def _percentile95(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+
+
+def _latency_by_type(results: list[QuestionResult]) -> dict:
+    """질문 유형별 완료 시간의 중앙값·p95(초). 지연은 유형마다 구조가 달라 한 숫자로 섞어 보지 않는다."""
+    by_type: dict[str, list[float]] = {}
+    for r in results:
+        by_type.setdefault(r.type, []).append(r.latency_s)
+    return {t: {"n": len(v), "median_s": round(statistics.median(v), 2), "p95_s": round(_percentile95(v), 2)} for t, v in by_type.items()}
+
+
+def _stage_means(results: list[QuestionResult]) -> dict:
+    stages: dict[str, list[float]] = {}
+    for r in results:
+        for name, seconds in r.stage_s.items():
+            stages.setdefault(name, []).append(seconds)
+    return {name: round(statistics.mean(v), 2) for name, v in stages.items()}
+
+
 def summarize(results: list[QuestionResult]) -> dict:
     answerable = [r for r in results if r.type == "answerable"]
     abstain = [r for r in results if r.type == "abstain"]
+    general = [r for r in results if r.type == "general"]
     latencies = sorted(r.latency_s for r in results)
     p95 = latencies[max(0, math.ceil(0.95 * len(latencies)) - 1)] if latencies else None
     hits = [bool(r.retrieved_hit) for r in answerable]
@@ -332,6 +374,15 @@ def summarize(results: list[QuestionResult]) -> dict:
         "p95_latency_s": p95,
         "n_answerable": len(answerable),
         "n_abstain": len(abstain),
+        "n_general": len(general),
+        "general_routed": rate([r.correct for r in general]),  # 일반 질문이 일반 답변으로 나간 비율(내용을 채점하지 않은 문항은 경로만 본 것)
+        "general_content_graded": sum(r.content_graded for r in general),  # 답의 내용까지 채점한 일반 질문 수
+        "general_content_correct": rate([r.correct for r in general if r.content_graded]),
+        "n_web": len([r for r in results if r.type == "web"]),
+        "web_correct": rate([r.correct for r in results if r.type == "web"]),
+        "latency_by_type": _latency_by_type(results),
+        "stage_mean_s": _stage_means(results),
+        "general_leaks": sum(r.answer_kind in GENERAL_KINDS for r in results if r.type != "general"),  # 문서 질문이 일반 답변으로 샌 건수 — 0이어야 한다
         "ci95": {"accuracy": _ci95(corrects), "hit_at_5": _ci95(hits)},
     }
 
@@ -396,7 +447,7 @@ def compare_main(argv: list[str]) -> None:
 
 
 _META_SETTINGS = ("TOP_K", "ANSWER_CONTEXT_DOCS", "CANDIDATE_CHUNKS", "FULL_DOCUMENT_CONTEXT", "NON_CURRENT_WEIGHT", "VERIFY_ANSWERS",
-                  "DOC_TYPE_ROUTING", "TYPE_MISMATCH_WEIGHT", "ITEM_CHECK")
+                  "DOC_TYPE_ROUTING", "TYPE_MISMATCH_WEIGHT", "ITEM_CHECK", "FEW_SHOT", "GENERAL_CHAT", "ANSWER_PIPELINE")
 
 
 def run_meta(
