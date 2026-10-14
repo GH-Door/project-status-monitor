@@ -169,7 +169,7 @@ def get_company(as_of: AsOf = None, scope: Scope = None) -> dict:
         view = overview.company_view(conn, _today(as_of), scope or None)
         if not view["empty"]:
             view["layout"] = dashboard.layout_view(conn, view["company"]["id"], view["scope"] or "", _today(as_of))
-    return {**view, "llm_ready": llm.api_key_status()["configured"], "rag_dir": str(RAG_DOCS_DIR)}
+    return {**view, "llm_ready": llm.api_key_status()["configured"], "rag_dir": str(RAG_DOCS_DIR), "general_chat": rag.GENERAL_CHAT}
 
 
 class CompanyPatch(BaseModel):
@@ -388,6 +388,8 @@ def ask(body: AskBody) -> dict:
         "answer": answer.text,
         "abstained": answer.abstained,
         "abstain_reason": answer.abstain_reason,
+        "errored": answer.errored,
+        "kind": answer.kind,
         "evidence": evidence,
         "conversation_id": conversation_id,
         "rewritten_query": answer.rewritten_query,
@@ -397,10 +399,10 @@ def ask(body: AskBody) -> dict:
 def _save_turn(conn: sqlite3.Connection, user_id: int, project_id: int, body: AskBody, answer, evidence: list[dict]) -> int:
     """질문·답을 대화에 저장한다. 장애로 못 답한 턴은 저장하지 않아 다시 물어도 맥락이 오염되지 않는다."""
     conversation_id = body.conversation_id or conversations.create(conn, project_id, user_id, body.question)
-    conversations.add_message(conn, conversation_id, "user", body.question)
+    conversations.add_message(conn, conversation_id, "user", body.question, kind=answer.kind)
     conversations.add_message(
         conn, conversation_id, "assistant", answer.text, rewritten_query=answer.rewritten_query,
-        evidence=evidence, abstained=answer.abstained, abstain_reason=answer.abstain_reason,
+        evidence=evidence, abstained=answer.abstained, abstain_reason=answer.abstain_reason, kind=answer.kind,
     )
     return conversation_id
 

@@ -530,3 +530,63 @@ def test_an_unknown_company_header_falls_back_to_the_first_company(client):
     body = client.get("/api/company", headers={"X-Company-Id": "99999"}).json()
 
     assert body["company"]["name"] == "라온공간워크스"
+
+
+# --- 일반 질문: 응답에 kind·errored가 있고, 일반 답변은 근거 없이 저장되며, 이어 묻는 질문에 맥락으로 간다 ---
+
+@pytest.fixture
+def general_chat(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    monkeypatch.setattr(api.rag, "GENERAL_CHAT", True)
+    seen = {"general_history": []}
+    monkeypatch.setattr(llm, "classify_question", lambda q, company, history, **k: ("general", llm.Usage(5, 1)))
+
+    def _general(question, history, **kwargs):
+        seen["general_history"].append(history)
+        return llm.GeneralAnswerResult(answer="일반 답변입니다", needs_company_data=False), llm.Usage(5, 5)
+
+    monkeypatch.setattr(llm, "answer_general", _general)
+    monkeypatch.setattr(dify, "retrieve", lambda *a, **k: [])
+    return seen
+
+
+def test_a_general_answer_is_returned_with_its_kind_and_no_evidence(client, general_chat):
+    body = client.post("/api/ask", json={"question": "엑셀 단축키 알려줘"}).json()
+
+    assert body["kind"] == "general" and body["answer"] == "일반 답변입니다"
+    assert body["abstained"] is False and body["errored"] is False and body["evidence"] == []
+
+
+def test_a_general_answer_is_saved_with_its_kind(client, general_chat):
+    body = client.post("/api/ask", json={"question": "엑셀 단축키 알려줘"}).json()
+
+    saved = client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"]
+
+    assert [m["kind"] for m in saved] == ["general", "general"]  # 질문과 답이 짝으로 일반 대화로 남는다
+
+
+def test_a_document_question_still_reports_the_document_kind_and_the_error_flag(client, general_chat):
+    body = client.post("/api/ask", json={"question": "9월 순매출은?"}).json()  # '순매출'은 회사 말이라 문서 경로로 간다
+
+    assert body["kind"] == "document" and body["abstained"] is True and body["errored"] is False
+
+
+def test_follow_ups_hand_only_the_general_turns_to_the_general_answerer(client, general_chat):
+    first = client.post("/api/ask", json={"question": "엑셀 단축키 알려줘"}).json()
+    monkey = general_chat["general_history"]
+
+    client.post("/api/ask", json={"question": "고마워", "conversation_id": first["conversation_id"]})
+
+    assert monkey[0] == [] or monkey[0] is None or monkey[0] == []  # 첫 질문은 맥락이 없다
+    assert [t["content"] for t in monkey[1]] == ["엑셀 단축키 알려줘", "일반 답변입니다"]
+
+
+def test_company_reports_whether_general_chat_is_on_so_the_screen_does_not_overpromise(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    monkeypatch.setattr(api.rag, "GENERAL_CHAT", False)
+    off = client.get("/api/company").json()
+    monkeypatch.setattr(api.rag, "GENERAL_CHAT", True)
+    on = client.get("/api/company").json()
+
+    assert off["general_chat"] is False and on["general_chat"] is True

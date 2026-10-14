@@ -51,10 +51,10 @@ export async function render() {
   }
 
   const thread = el("div", { class: "thread", "aria-live": "polite", "aria-label": "대화" },
-    saved ? restoredMessages(saved.messages) : emptyThread());
+    saved ? restoredMessages(saved.messages) : emptyThread(company.general_chat));
   const listPane = el("nav", { class: "convo-list", "aria-label": "대화 목록" });
   const docsPane = el("div", { class: "panel docs-pane" });
-  const question = el("textarea", { rows: 2, placeholder: "선택한 문서 안에서만 답해요. 근거가 없으면 답변을 유보해요.", "aria-label": "질문" });
+  const question = el("textarea", { rows: 2, placeholder: company.general_chat ? "문서에 대해 물어보세요. 문서와 상관없는 질문은 일반 답변이나 웹 검색으로 도와드려요." : "선택한 문서 안에서만 답해요. 근거를 찾지 못하면 그렇다고 알려드려요.", "aria-label": "질문" });
   const send = el("button", { type: "button", class: "btn primary" }, "질문하기");
 
   async function drawConversations() {

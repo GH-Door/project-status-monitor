@@ -39,6 +39,23 @@ ROUTE_MAX_OUTPUT_TOKENS = 30  # 유형 이름 하나만 돌려받는다
 # 실험 G1(2026-10-12): 답하기 전에 "질문이 묻는 것 / 근거가 말하는 것 / 같은가"를 채우게 하고, 다르면 코드가 유보로 강제한다.
 # 위험 답변(유보해야 하는데 답함)이 모두 비슷한 항목·다른 프로젝트 값으로 둔갑한 경우라서 겨냥했다. 효과 측정 전이라 기본은 끈다. 켜려면 ITEM_CHECK=1
 ITEM_CHECK = os.getenv("ITEM_CHECK", "0") == "1"
+# 실험 G3(2026-10-12): G1(구조화 필드)이 정답률·지연을 해쳐 폐기됨 → 출력 형식은 그대로 두고 프롬프트에 둔갑 패턴 예시만 붙인다. 켜려면 FEW_SHOT=1
+FEW_SHOT = os.getenv("FEW_SHOT", "0") == "1"
+# 일반 질문(회사·문서와 상관없는 질문)에 문서 없이 답하는 기능(2026-10-12). 회사 질문이 일반 답변으로 새서 값을 지어내면 가장 나쁘므로
+# 문서를 고르지 않았고·회사 신호가 없고·분류기가 일반이라 했고·일반 답변기도 회사 자료가 필요하다고 안 할 때만 일반 답변이 나간다.
+# 2026-10-12 dev 전체(비일반 134문항×2회) 측정: 문서 질문이 일반 답변으로 샌 건 0건, 일반 질문 14개는 모두 일반 답변, 정답률은 기준선 대비 잡음 범위 → 기본 켬.
+# 끄려면 GENERAL_CHAT=0
+GENERAL_CHAT = os.getenv("GENERAL_CHAT", "1") == "1"
+# 질문 처리 방식: gates(낱말 검사 + 분류기, 기존) | planner(모델이 도구를 골라 경로·독립 질문을 정한다, 평가 후 기본값 전환)
+ANSWER_PIPELINE = os.getenv("ANSWER_PIPELINE", "gates")
+# 웹 검색 답변 모델. 기본은 ANSWER_MODEL(변화 없음). 실측(8문항 1회): gpt-4.1-mini는 출처 인용을 3건에만 달고 4건은 "확인할 수 없다"고 답했고, gpt-4.1은 6건에 달고 8건 모두 값을 답했다
+WEB_MODEL = os.getenv("WEB_MODEL", ANSWER_MODEL)
+CLASSIFY_MAX_OUTPUT_TOKENS = 20  # 'document'/'general' 한 단어
+GENERAL_MAX_OUTPUT_TOKENS = 700
+# 웹 검색: 날씨·시세처럼 지금의 정보가 필요한 일반 질문에만 쓴다(분류기가 web으로 가른 질문). 검색 결과가 입력에 들어가 호출당 입력이 크다.
+# 검색 호출 요금은 공식 가격표로 아직 확인하지 못한 추정치다(1,000회당 10달러 가정) — 예산 예약·정산에 보수적으로 쓴다.
+WEB_SEARCH_FEE_USD = 0.01
+WEB_SEARCH_INPUT_CHARS_ESTIMATE = 30_000  # 검색 결과가 입력에 더해지는 양의 어림(실측 약 8천 토큰)
 FULL_DOCUMENT_CONTEXT = os.getenv("FULL_DOCUMENT_CONTEXT", "1") == "1"
 MAX_IMAGES_PER_ANSWER = 3
 MAX_OUTPUT_TOKENS = 800
