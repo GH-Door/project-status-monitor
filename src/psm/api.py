@@ -168,7 +168,7 @@ def get_company(as_of: AsOf = None, scope: Scope = None) -> dict:
     with _db() as (conn, _):
         view = overview.company_view(conn, _today(as_of), scope or None)
         if not view["empty"]:
-            view["layout"] = dashboard.layout_view(conn, view["company"]["id"], view["scope"] or "")
+            view["layout"] = dashboard.layout_view(conn, view["company"]["id"], view["scope"] or "", _today(as_of))
     return {**view, "llm_ready": llm.api_key_status()["configured"], "rag_dir": str(RAG_DOCS_DIR)}
 
 

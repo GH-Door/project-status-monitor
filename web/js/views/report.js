@@ -24,7 +24,7 @@ function reportNode(r) {
     el("section", {}, el("h3", {}, "문서에서 읽은 지표"), r.kpis.length === 0 ? el("p", { class: "muted" }, "반영된 지표가 없어요.")
       : table(["지표", "값", "기간", "분류", "출처"], r.kpis.map((k) => el("tr", {}, el("td", {}, k.label), el("td", {}, fmtValue(k.value, k.unit)), el("td", {}, k.period ?? "-"), el("td", {}, k.category), el("td", {}, `${k.origin} · ${k.document.replace(/\.md$/, "")}`)))),
       el("p", { class: "muted small" }, r.kpi_note)),
-    ...r.breakdowns.map((b) => el("section", {}, el("h3", {}, `${b.name} (${b.period ?? "기간 미상"})`),
+    ...r.breakdowns.map((b) => el("section", {}, el("h3", {}, `${b.name} (${b.period ?? "기간 없음"})`),
       table(["항목", "값"], b.rows.map((x) => el("tr", {}, el("td", {}, x.label), el("td", {}, fmtValue(x.value, b.unit))))))),
     el("section", {}, el("h3", {}, "근거 문서"), el("p", { class: "small" }, `${r.documents.length}건 등록`, warned.length > 0 && ` · 주의 문서: ${warned.map((d) => `${d.filename}(${d.warning})`).join(", ")}`)),
     el("section", {}, el("h3", {}, "최근 승인 이력"), r.history.length === 0 ? el("p", { class: "muted" }, "이력이 없어요.")

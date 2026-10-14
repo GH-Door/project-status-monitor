@@ -1,7 +1,7 @@
 import { withTip } from "./charts.js";
 import { el } from "./dom.js";
 import { svg } from "./donut.js";
-import { compact, fmtValue } from "./format.js";
+import { bare, fmtValue } from "./format.js";
 import { NEUTRAL, seriesColor } from "./palette.js";
 
 const MAX_SERIES = 4;  // 범주형은 4개까지만 — 그 이상은 표 보기에서 본다
@@ -11,12 +11,23 @@ export function legend(series) {
     el("span", {}, el("i", { style: `background:${s.color ?? seriesColor(i)}` }), s.name)));
 }
 
-const niceMax = (v) => {
-  const exp = 10 ** Math.floor(Math.log10(v || 1)), n = v / exp;
-  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * exp;
+// 눈금 4칸의 간격이 깔끔하도록(1·1.5·2·2.5·3·4·5·6·8) 최대를 정한다. 2.2억 → 2.4억 (5억까지 늘리지 않는다)
+const NICE_STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+export const niceMax = (v) => {
+  const q = (v || 1) / 4, exp = 10 ** Math.floor(Math.log10(q)), n = q / exp;
+  return Number((NICE_STEPS.find((s) => n <= s + 1e-9) * exp * 4).toPrecision(12));
 };
 const trim = (text, n = 7) => (text.length > n ? `${text.slice(0, Math.max(n - 1, 1))}…` : text);
 const fitChars = (slot) => Math.max(3, Math.floor(slot / 6.6));  // 칸 폭에 들어가는 글자 수
+const labelStep = (labels, slot) => Math.max(1, Math.ceil(Math.max(...labels.map((l) => l.length)) / fitChars(slot)));  // 시간 축 라벨 솎기 간격
+// 값 라벨을 달 막대: 글자가 칸에 다 들어가면 전부, 아니면 가장 큰 값과 최신 값만(나머지는 툴팁). 막대마다 숫자를 달지 않는다.
+export const labelledIndexes = (values, slot, textW) => {
+  const all = values.map((_, i) => i);
+  if (textW <= slot) return all;
+  const top = values.lastIndexOf(Math.max(...values));
+  return [...new Set([top, values.length - 1])].sort((a, b) => a - b);
+};
+const showsLabel = (thin, count, i, step) => !thin || (count - 1 - i) % step === 0;  // 최신 달부터 step개마다 하나
 
 // 글자 폭 어림: 한글 11px, 숫자·기호 6.2px (11px 글꼴 기준)
 const textWidth = (text) => [...text].reduce((w, ch) => w + (/[가-힣]/.test(ch) ? 11 : 6.2), 0);
@@ -24,7 +35,7 @@ const textWidth = (text) => [...text].reduce((w, ch) => w + (/[가-힣]/.test(ch
 function scaffold(width, height, max, unit, right = 14, min = 0) {  // min < 0이면 0선 아래로도 눈금을 둔다 (감액 같은 마이너스 값)
   const steps = height < 150 ? 2 : 4;  // 낮은 카드는 눈금을 줄여 글자가 겹치지 않게
   const at = (i) => min + ((max - min) / steps) * i;
-  const ticks = Array.from({ length: steps + 1 }, (_, i) => compact(at(i), unit));
+  const ticks = Array.from({ length: steps + 1 }, (_, i) => bare(at(i), unit));
   const left = Math.max(40, Math.min(84, 14 + Math.max(...ticks.map(textWidth))));  // 눈금 글자가 잘리지 않게
   const m = width < 420 ? { l: left, r: right, t: 10, b: 28 } : { l: left, r: right, t: 14, b: 32 };
   const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, class: "chart-svg", role: "img" });
@@ -33,21 +44,22 @@ function scaffold(width, height, max, unit, right = 14, min = 0) {  // min < 0�
     const v = at(i);
     root.append(svg("line", { x1: m.l, x2: width - m.r, y1: y(v), y2: y(v), stroke: "#eef0f3", "stroke-width": 1 }));
     const tick = svg("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end", class: "axis" });
-    tick.textContent = compact(v, unit);
+    tick.textContent = bare(v, unit);
     root.append(tick);
   }
   return { root, m, y };
 }
 
 // 세로 묶음 막대: 두께 ≤ 28, 위쪽 끝만 4px 둥글게, 막대 사이 2px. 값 라벨은 막대가 적을 때만.
-export function columnChart({ labels, series, unit, ariaLabel, height = 250, width = 480 }) {
+export function columnChart({ labels, titles, series, unit, ariaLabel, height = 250, width = 480, thin = false }) {
   const shown = series.slice(0, MAX_SERIES);
   const values = shown.flatMap((s) => s.values.filter((v) => v != null));
   const max = niceMax(Math.max(...values, 1)), lowest = Math.min(...values, 0), min = lowest < 0 ? -niceMax(-lowest) : 0;
   const { root, m, y } = scaffold(width, height, max, unit, 14, min);
   root.setAttribute("aria-label", ariaLabel);
   const slot = (width - m.l - m.r) / labels.length, barW = Math.min(labels.length <= 2 ? 56 : 28, (slot * 0.72) / shown.length - 2), base = y(0);
-  const labelEvery = shown.length * labels.length <= 8 && shown.every((s) => s.values.every((v) => v == null || textWidth(compact(v, unit)) <= barW + 8));  // 값 글자가 막대보다 넓어 겹치면 툴팁에만
+  const labelEvery = shown.length * labels.length <= 8 && shown.every((s) => s.values.every((v) => v == null || textWidth(bare(v, unit)) <= barW + 8));  // 값 글자가 막대보다 넓어 겹치면 툴팁에만
+  const step = labelStep(labels, slot);
   labels.forEach((label, i) => {
     const start = m.l + i * slot + (slot - (barW + 2) * shown.length + 2) / 2;
     shown.forEach((s, j) => {
@@ -57,16 +69,16 @@ export function columnChart({ labels, series, unit, ariaLabel, height = 250, wid
       const d = v > 0
         ? `M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${base} Z`
         : `M${x},${base} V${top - r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top - r} V${base} Z`;  // 마이너스는 0선 아래로, 끝만 둥글게
-      root.append(withTip(svg("path", { fill: s.color ?? seriesColor(j), d }), fmtValue(v, unit), `${s.name} · ${label}`));
+      root.append(withTip(svg("path", { fill: s.color ?? seriesColor(j), d }), fmtValue(v, unit), `${s.name} · ${titles?.[i] ?? label}`));
       if (labelEvery) {
         const t = svg("text", { x: x + barW / 2, y: v > 0 ? top - 6 : top + 14, "text-anchor": "middle", class: "val-label" });
-        t.textContent = compact(v, unit);
+        t.textContent = bare(v, unit);
         root.append(t);
       }
     });
     const axis = svg("text", { x: m.l + i * slot + slot / 2, y: height - 10, "text-anchor": "middle", class: "axis" });
-    axis.textContent = trim(label, fitChars(slot));
-    root.append(axis);
+    axis.textContent = trim(label, fitChars(thin ? slot * step : slot));  // 솎은 라벨은 건너뛴 칸까지 쓸 수 있다
+    if (showsLabel(thin, labels.length, i, step)) root.append(axis);
   });
   return root;
 }
@@ -90,7 +102,7 @@ export function lineChart({ labels, series, unit, ariaLabel, height = 250, width
     const [lx, ly, lv] = pts.at(-1) ?? [];
     if (lx != null) {
       const t = svg("text", { x: lx, y: j ? ly + 16 : ly - 10, "text-anchor": "end", class: "val-label" });  // 둘째 계열은 점 아래에 써서 겹치지 않게
-      t.textContent = compact(lv, unit);
+      t.textContent = bare(lv, unit);
       root.append(t);
     }
   });
@@ -103,18 +115,18 @@ export function lineChart({ labels, series, unit, ariaLabel, height = 250, width
 }
 
 // 가로 묶음 막대: 항목이 많거나 이름이 길 때. 두께 ≤ 20, 값은 막대 끝에.
-export function rowChart({ labels, series, unit }) {
+export function rowChart({ labels, titles, series, unit }) {
   const shown = series.slice(0, MAX_SERIES);
   const max = Math.max(...shown.flatMap((s) => s.values.filter((v) => v != null)), 1);
   return el("div", { class: "hbar" }, labels.map((label, i) => el("div", { class: "hbar-row" },
-    el("span", { class: "hbar-label" }, label),
+    el("span", { class: "hbar-label", title: titles?.[i] ?? null }, label),
     el("div", { class: "hbar-stack" }, shown.map((s, j) => {
       const v = s.values[i];
       if (v == null || v <= 0) return null;
       const line = el("div", { class: "hbar-line" }, el("div", { style: "flex:1;min-width:0" },
         el("div", { class: "hbar-bar", style: `width:${(v / max) * 100}%;background:${s.color ?? seriesColor(j)}`, "aria-hidden": "true" })),
-        el("span", { class: "hbar-val" }, compact(v, unit)));
-      return withTip(el("div", { tabindex: "0", "aria-label": `${s.name} ${label} ${fmtValue(v, unit)}` }, line), fmtValue(v, unit), `${s.name} · ${label}`);
+        el("span", { class: "hbar-val" }, bare(v, unit)));
+      return withTip(el("div", { tabindex: "0", "aria-label": `${s.name} ${titles?.[i] ?? label} ${fmtValue(v, unit)}` }, line), fmtValue(v, unit), `${s.name} · ${titles?.[i] ?? label}`);
     })))));
 }
 
@@ -127,12 +139,13 @@ const textAt = (x, y, text, cls, anchor = "middle", fill) => {
 };
 
 // 누적 막대: 계열을 아래부터 쌓고, 조각 안에 값(들어갈 때만), 위에 합계. 조각 사이 1.5px 틈.
-export function stackedColumnChart({ labels, series, unit, ariaLabel, height = 250, width = 480 }) {
+export function stackedColumnChart({ labels, titles, series, unit, ariaLabel, height = 250, width = 480, thin = false }) {
   const shown = series.slice(0, MAX_SERIES);
   const totals = labels.map((_, i) => shown.reduce((sum, s) => sum + (s.values[i] ?? 0), 0));
   const { root, m, y } = scaffold(width, height, niceMax(Math.max(...totals, 1)), unit);
   root.setAttribute("aria-label", ariaLabel);
-  const slot = (width - m.l - m.r) / labels.length, barW = Math.min(38, slot * 0.62);
+  const slot = (width - m.l - m.r) / labels.length, barW = Math.min(38, slot * 0.62), step = labelStep(labels, slot);
+  const withTotal = new Set(labelledIndexes(totals, slot, Math.max(...totals.map((t) => textWidth(bare(t, unit)))) + 4));
   labels.forEach((label, i) => {
     const x = m.l + i * slot + (slot - barW) / 2, top = shown.findLastIndex((s) => (s.values[i] ?? 0) > 0);
     let cum = 0;
@@ -141,12 +154,12 @@ export function stackedColumnChart({ labels, series, unit, ariaLabel, height = 2
       if (v == null || v <= 0) return;
       const y0 = y(cum), y1 = y(cum + v), h = y0 - y1 - 1.5, color = s.color ?? seriesColor(j), r = Math.min(4, barW / 2);
       const path = j === top ? `M${x},${y0} V${y1 + r} Q${x},${y1} ${x + r},${y1} H${x + barW - r} Q${x + barW},${y1} ${x + barW},${y1 + r} V${y0} Z` : `M${x},${y0} V${y1} H${x + barW} V${y0} Z`;
-      root.append(withTip(svg("path", { d: path, fill: color }), fmtValue(v, unit), `${s.name} · ${label}`));
-      if (h >= 16 && textWidth(compact(v, unit)) + 6 <= barW) root.append(textAt(x + barW / 2, (y0 + y1) / 2 + 4, compact(v, unit), "seg-label", "middle", onColor(color)));
+      root.append(withTip(svg("path", { d: path, fill: color }), fmtValue(v, unit), `${s.name} · ${titles?.[i] ?? label}`));
+      if (h >= 16 && textWidth(bare(v, unit)) + 6 <= barW) root.append(textAt(x + barW / 2, (y0 + y1) / 2 + 4, bare(v, unit), "seg-label", "middle", onColor(color)));
       cum += v;
     });
-    root.append(textAt(x + barW / 2, y(totals[i]) - 6, compact(totals[i], unit), "val-label"));
-    root.append(textAt(m.l + i * slot + slot / 2, height - 10, trim(label, fitChars(slot)), "axis"));
+    if (withTotal.has(i)) root.append(textAt(x + barW / 2, y(totals[i]) - 6, bare(totals[i], unit), "val-label"));
+    if (showsLabel(thin, labels.length, i, step)) root.append(textAt(m.l + i * slot + slot / 2, height - 10, trim(label, fitChars(thin ? slot * step : slot)), "axis"));
   });
   return root;
 }
@@ -164,7 +177,7 @@ export function comboChart({ labels, bars, line, ariaLabel, height = 260, width 
     if (v > 0) {
       const top = y(v), r = Math.min(4, barW / 2);
       root.append(withTip(svg("path", { fill: seriesColor(0), d: `M${x},${base} V${top + r} Q${x},${top} ${x + r},${top} H${x + barW - r} Q${x + barW},${top} ${x + barW},${top + r} V${base} Z` }), fmtValue(v, bars.unit), `${bars.name} · ${label}`));
-      if (base - top >= 16 && textWidth(compact(v, bars.unit)) + 6 <= barW) root.append(textAt(x + barW / 2, top + 14, compact(v, bars.unit), "seg-label", "middle", "#fff"));
+      if (base - top >= 16 && textWidth(bare(v, bars.unit)) + 6 <= barW) root.append(textAt(x + barW / 2, top + 14, bare(v, bars.unit), "seg-label", "middle", "#fff"));
     }
     if (line.values[i] != null) pts.push([x + barW / 2, yLine(line.values[i]), line.values[i], label]);
     root.append(textAt(m.l + i * slot + slot / 2, height - 10, trim(label, fitChars(slot)), "axis"));
@@ -190,7 +203,7 @@ export function burnChart({ labels, budget, spent, extra, unit }) {
   return el("div", { class: "hbar" }, rows.map((r) => el("div", { class: "hbar-row" }, el("span", { class: "hbar-label" }, r.label),
     el("div", { class: "burn" }, el("div", { class: "burn-bar", role: "img", "aria-label": `${r.label} 예산 ${fmtValue(r.b, unit)}, 집행 ${fmtValue(r.s, unit)}, 추가 예상 ${fmtValue(r.e, unit)}` },
       seg("s-spent", r.sIn, `${r.label} · 누계 집행`), seg("s-extra", r.eIn, `${r.label} · 추가 집행 예상`), seg("s-free", r.free, `${r.label} · 여유`), seg("s-over", r.over, `${r.label} · 예산 초과`)),
-      el("span", { class: "hbar-val" }, `${compact(r.s + r.e, unit)} / ${compact(r.b, unit)}${r.pct != null ? ` · ${Math.round(r.pct)}%` : ""}`)))));
+      el("span", { class: "hbar-val" }, `${bare(r.s + r.e, unit)} / ${bare(r.b, unit)}${r.pct != null ? ` · ${Math.round(r.pct)}%` : ""}`)))));
 }
 
 // 영역 + 선 곡선: 계획(기한 기준 누적)을 영역으로, 실제(승인 기준 누적)를 굵은 선으로. 기준일에 세로선.

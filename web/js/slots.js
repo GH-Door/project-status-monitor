@@ -1,7 +1,7 @@
 // 첫 화면 슬롯 채우기 — DOM에 의존하지 않는 순수 함수라 node로 테스트한다.
 // 상단에는 핵심 지표 "그래프"만 둔다(글자 타일 없음). 슬롯이 형식을 정하고, 데이터는 후보 중 앞선 것을 고른다.
 // 데이터가 없으면 다음 후보로 대체하고, 그래도 없으면 비워 두어 이웃이 넓어진다.
-import { fmtValue, pct1, signed } from "./format.js";
+import { fmtValue, isMonthAxis, pct1, signed } from "./format.js";
 
 export const MAX_GAUGES = 4;
 
@@ -33,7 +33,7 @@ function buildGauges(d) {
   if (k.margin?.rate != null) list.push({ kind: "margin", title: "매출총이익률", value: k.margin.rate, display: fmtValue(k.margin.rate, "%"), tip: "영업이익이 아니에요" });
   for (const h of k.highlights) {
     if (list.length >= MAX_GAUGES) break;
-    if (h.unit === "%" && h.value >= 0 && h.value <= 100) list.push({ kind: "ratio", title: h.label, value: h.value, display: fmtValue(h.value, "%"), tip: h.period ?? "기간 미상" });
+    if (h.unit === "%" && h.value >= 0 && h.value <= 100) list.push({ kind: "ratio", title: h.label, value: h.value, display: fmtValue(h.value, "%"), tip: h.period ?? "기간 없음" });
   }
   return list.slice(0, MAX_GAUGES);
 }
@@ -71,7 +71,7 @@ export function fillSlots(d) {
   let d3 = null;
   if (burnGroup) d3 = { form: "burn", group: burnGroup, roles: roles(burnGroup).burn };
   else if (k.budget?.total && !state.budget) { d3 = { form: "budget-bar", budget: k.budget }; state.budget = true; }
-  else { const g = take(anyBars); if (g) d3 = { form: "rows", group: g }; }
+  else { const g = take(anyBars); if (g) d3 = { form: isMonthAxis(g.labels) ? "grouped" : "rows", group: g }; }  // 시간은 가로(x)축
 
   const rest = {
     groups: c.groups.filter((g) => !used.has(g)),

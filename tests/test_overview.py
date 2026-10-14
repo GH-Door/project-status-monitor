@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from psm import demo_seed, overview
+from psm import demo_seed, metrics, overview
 
 TODAY = date(2026, 10, 2)
 
@@ -451,6 +451,59 @@ def test_month_labels_are_ordered_by_time_not_by_value(conn, seeded):
     assert group["labels"] == ["7월", "8월", "9월"] and group["series"][0]["values"] == [142, 181, 208]
 
 
+def test_year_month_labels_are_ordered_by_time_across_years(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "05_월별보고.md")
+    _breakdown(conn, pid, 1, "월별 반품률", [("2026-02", 3.9), ("2026-04", 2.8), ("2025-11", 1.8), ("2026-03", 2.1)], unit="%", period=None)
+    _breakdown(conn, pid, 1, "월별 순매출", [("2026년 3월", 30), ("2025년 12월", 10), ("2026년 1월", 20)], period=None)
+
+    groups = {g["series"][0]["name"]: g for g in overview.company_view(conn, TODAY)["charts"]["groups"]}
+
+    assert groups["반품률"]["labels"] == ["2025-11", "2026-02", "2026-03", "2026-04"]
+    assert groups["반품률"]["series"][0]["values"] == [1.8, 3.9, 2.1, 2.8]
+    assert groups["순매출"]["labels"] == ["2025년 12월", "2026년 1월", "2026년 3월"]
+
+
+def test_monthly_sales_chart_reads_ai_monthly_net_sales_and_monthly_targets(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "03_월간보고.md")
+    _llm_metric(conn, pid, 1, "월 순매출", 150_000_000, period="2026-08")
+    _llm_metric(conn, pid, 1, "월 순매출", 160_000_000, period="2026-09")
+    _llm_metric(conn, pid, 1, "월 목표 순매출", 180_000_000, period="2026-08")
+    _llm_metric(conn, pid, 1, "월 목표 순매출", 190_000_000, period="2026-09")
+    _llm_metric(conn, pid, 1, "10월 목표 순매출", 200_000_000, period="2026-10")
+    _llm_metric(conn, pid, 1, "연간 순매출 목표", 2_000_000_000, period=None)  # 달 값이 아니다
+    _llm_metric(conn, pid, 1, "10월 잠정 누계 순매출", 70_000_000, period="2026-10")  # 누계는 그 달 실적이 아니다
+
+    monthly = overview.company_view(conn, TODAY)["charts"]["monthly"]
+
+    assert monthly["periods"] == ["2026-08", "2026-09", "2026-10"]
+    series = {s["name"]: s["values"] for s in monthly["series"]}
+    assert series == {"실적": [150_000_000, 160_000_000, None], "목표": [180_000_000, 190_000_000, 200_000_000]}
+
+
+def test_monthly_chart_reports_min_max_and_mean_per_series(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "05_월별보고.md")
+    _breakdown(conn, pid, 1, "월별 반품률", [("2026-02", 3.9), ("2026-03", 2.1), ("2026-04", 2.7)], unit="%", period=None)
+
+    group = overview.company_view(conn, TODAY)["charts"]["groups"][0]
+
+    assert group["stats"] == [{"name": "반품률", "min": {"label": "2026-03", "value": 2.1},
+                               "max": {"label": "2026-02", "value": 3.9}, "mean": 2.9}]
+
+
+def test_charts_without_a_month_axis_or_with_fewer_than_three_months_have_no_stats(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "05_월별보고.md")
+    _breakdown(conn, pid, 1, "채널별 매출", [("온라인", 60), ("매장", 40), ("도매", 20)], period=None)
+    _breakdown(conn, pid, 1, "월별 폐기", [("2026-02", 210), ("2026-03", 140)], unit="박스", period=None)
+
+    groups = overview.company_view(conn, TODAY)["charts"]["groups"]
+
+    assert [g.get("stats") for g in groups] == [None, None]
+
+
 # --- 하위 프로젝트(scope): 섞지 않고 따로 보여 준다 ---
 
 def _scoped_metric(conn, pid, document_id, label, value, scope, *, unit="원", period="2026-09", importance=4):
@@ -491,7 +544,7 @@ def test_company_view_lists_the_available_scopes_with_counts(conn, seeded):
 
     scopes = overview.company_view(conn, TODAY)["scopes"]
 
-    assert scopes == [{"scope": "N01-P01", "count": 1}, {"scope": "N01-P02", "count": 1}]
+    assert scopes == [{"scope": "N01-P01", "count": 1, "name": None}, {"scope": "N01-P02", "count": 1, "name": None}]
 
 
 def test_breakdowns_and_charts_are_limited_to_the_scope(conn, seeded):
@@ -613,3 +666,172 @@ def test_charts_keep_the_selected_projects_own_charts_and_add_the_comparisons(co
     groups = overview.company_view(conn, TODAY, scope="N01-P02")["charts"]["groups"]
 
     assert [g.get("compare", False) for g in groups] == [False, True, True]  # 이 프로젝트의 표 1개 + 비교 2개
+
+
+# --- 하위 프로젝트 이름: 현행 사업계획서의 제목에서 가져온다 (파일명·보관본 제목은 쓰지 않는다) ---
+
+def _plan_file(conn, tmp_path, monkeypatch, pid, document_id, filename, *, scope, status, title):
+    from psm import ingest
+
+    monkeypatch.setattr(ingest, "ORIGINALS_DIR", tmp_path / "originals")
+    _doc(conn, pid, document_id, filename)
+    path = ingest.document_storage_path(conn, document_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'---\nproject_id: "{scope}"\ndoc_type: "사업계획"\nstatus: "{status}"\n---\n\n# {title}\n', encoding="utf-8")
+
+
+def test_scope_name_comes_from_the_current_plan_title_without_the_plan_suffix(conn, seeded, tmp_path, monkeypatch):
+    pid = _scoped_setup(conn, seeded)
+    _plan_file(conn, tmp_path, monkeypatch, pid, 11, "013_사업계획_브릿지.md", scope="N01-P02", status="approved_current",
+               title="찬율학원 강의실 출입문과 복도 동선 실행사업계획")
+
+    scopes = {s["scope"]: s["name"] for s in overview.company_view(conn, TODAY)["scopes"]}
+
+    assert scopes["N01-P02"] == "찬율학원 강의실 출입문과 복도 동선"
+    assert scopes["N01-P01"] is None  # 사업계획서가 없으면 이름 없이 코드만 보인다
+
+
+def test_scope_name_ignores_an_archived_plan_even_if_it_is_listed_first(conn, seeded, tmp_path, monkeypatch):
+    pid = _scoped_setup(conn, seeded)
+    _plan_file(conn, tmp_path, monkeypatch, pid, 11, "011_사업계획_라이트.md", scope="N01-P01", status="historical",
+               title="라이트 3월 기초사업계획 보관본")
+
+    scopes = {s["scope"]: s["name"] for s in overview.company_view(conn, TODAY)["scopes"]}
+
+    assert scopes["N01-P01"] is None
+
+
+# --- 비교 그래프의 프로젝트 이름: 축에는 고객명, 전체 이름과 코드는 label_titles(툴팁) ---
+
+def _named_compare_setup(conn, seeded, tmp_path, monkeypatch, second_title="찬율학원 강의실 출입문과 복도 동선 실행사업계획"):
+    pid = _scoped_setup(conn, seeded)
+    _plan_file(conn, tmp_path, monkeypatch, pid, 11, "001_사업계획_라이트.md", scope="N01-P01", status="approved_current",
+               title="진루상사 업무동 회의실 방음 개선 실행사업계획")
+    _plan_file(conn, tmp_path, monkeypatch, pid, 12, "013_사업계획_브릿지.md", scope="N01-P02", status="approved_current", title=second_title)
+    return pid
+
+
+def test_compare_axis_uses_the_customer_name_and_titles_keep_full_name_and_code(conn, seeded, tmp_path, monkeypatch):
+    pid = _named_compare_setup(conn, seeded, tmp_path, monkeypatch)
+
+    group = overview.label_scopes(conn, pid, overview._compare_metric_chart(
+        [{"label": "처리 달성률", "unit": "%", "values": {"N01-P01": 55.0, "N01-P02": 100.0}, "periods": ["2026-09"], "importance": 4}]))
+
+    assert group["labels"] == ["진루상사", "찬율학원"]
+    assert group["label_titles"] == ["진루상사 업무동 회의실 방음 개선 (N01-P01)", "찬율학원 강의실 출입문과 복도 동선 (N01-P02)"]
+
+
+def test_a_shared_customer_name_falls_back_to_the_full_name_so_axes_stay_distinct(conn, seeded, tmp_path, monkeypatch):
+    pid = _named_compare_setup(conn, seeded, tmp_path, monkeypatch, second_title="진루상사 별관 방음 보강 실행사업계획")
+
+    group = overview.label_scopes(conn, pid, overview._compare_metric_chart(
+        [{"label": "처리 달성률", "unit": "%", "values": {"N01-P01": 55.0, "N01-P02": 100.0}, "periods": [], "importance": 4}]))
+
+    assert len(set(group["labels"])) == 2 and group["labels"][0] == "진루상사 업무동 회의실 방음 개선"
+
+
+def test_scopes_without_a_name_and_non_project_charts_are_left_alone(conn, seeded, tmp_path, monkeypatch):
+    pid = _named_compare_setup(conn, seeded, tmp_path, monkeypatch)
+    share = {"kind": "share", "labels": ["N01-P01"], "series": []}
+
+    assert overview.label_scopes(conn, pid, share) == share  # 구성비 도넛의 라벨은 프로젝트가 아니다
+    plain = overview.label_scopes(conn, pid, {"kind": "bars", "labels": ["N01-P09"], "series": []})
+    assert plain["labels"] == ["N01-P09"] and plain["label_titles"] == ["N01-P09"]
+
+
+# --- 기준일: 기준일이 속한 달 이후의 값은 숨기고, 기간 없는 값은 항상 보인다 ---
+
+def _timeline(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    for document_id, name in [(1, "04_2026년08월_매출보고서.md"), (2, "05_2026년09월_매출보고서.md"), (3, "01_사업계획서.md")]:
+        _doc(conn, pid, document_id, name)
+    _metric(conn, pid, 1, "net_sales", 100, period="2026-08")
+    _metric(conn, pid, 2, "net_sales", 200, period="2026-09")
+    _metric(conn, pid, 3, "sales_target", 150, period=None)  # 기간 없는 값
+    _breakdown(conn, pid, 1, "채널별 매출", [("온라인", 60), ("매장", 40)], period="2026-08")
+    _breakdown(conn, pid, 2, "채널별 매출", [("온라인", 150), ("매장", 50)], period="2026-09")
+    return pid
+
+
+def _net_sales(rows):
+    return next(r["value"] for r in rows if r["key"] == "net_sales")
+
+
+def test_published_rows_use_the_latest_value_up_to_the_as_of_month(conn, seeded):
+    pid = _timeline(conn, seeded)
+
+    assert _net_sales(overview._published_rows(conn, pid)) == 200  # 기준일을 주지 않으면 가장 최근 값
+    assert _net_sales(overview._published_rows(conn, pid, as_of=date(2026, 8, 31))) == 100
+    assert _net_sales(overview._published_rows(conn, pid, as_of=date(2026, 9, 1))) == 200  # 기준일이 속한 달은 포함
+
+
+def test_values_without_a_period_are_always_shown(conn, seeded):
+    pid = _timeline(conn, seeded)
+
+    rows = overview._published_rows(conn, pid, as_of=date(2026, 1, 1))
+
+    assert [r["key"] for r in rows] == ["sales_target"]  # 기간 있는 값은 전부 아직 없다
+
+
+def test_breakdowns_follow_the_as_of_month(conn, seeded):
+    pid = _timeline(conn, seeded)
+
+    early = overview._latest_breakdowns(conn, pid, as_of=date(2026, 8, 15))
+    latest = overview._latest_breakdowns(conn, pid)
+
+    online = lambda breakdowns: [{r["label"]: r["value"] for r in b["rows"]}["온라인"] for b in breakdowns]
+    assert online(early) == [60]
+    assert online(latest) == [150]
+
+
+def test_company_view_hides_later_months_in_kpis_and_the_monthly_chart(conn, seeded):
+    _timeline(conn, seeded)
+
+    view = overview.company_view(conn, date(2026, 8, 20))
+
+    assert view["kpis"]["sales"]["net_sales"] == 100
+    assert view["charts"]["monthly"]["periods"] == ["2026-08"]  # 월별 그래프도 8월까지만
+    assert view["breakdowns"][0]["period"] == "2026-08"
+    assert overview.company_view(conn, date(2026, 10, 2))["kpis"]["sales"]["net_sales"] == 200
+
+
+def test_metric_history_stops_at_the_as_of_month(conn, seeded):
+    pid = _timeline(conn, seeded)
+
+    assert metrics.history(conn, pid, "net_sales", as_of=date(2026, 8, 31)) == [("2026-08", 100)]
+    assert metrics.history(conn, pid, "net_sales") == [("2026-08", 100), ("2026-09", 200)]
+
+
+# --- 월 라벨이 있는 표(월별 …): 기준일 이후 달의 행을 숨긴다 ---
+
+def test_monthly_breakdown_rows_after_the_as_of_month_are_hidden(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "05_월별보고.md")
+    _breakdown(conn, pid, 1, "월별 반품률", [("2026-03", 2.1), ("2026-02", 3.9), ("2026-01", 1.2), ("2026-04", 2.8)], unit="%", period=None)
+
+    early = overview._latest_breakdowns(conn, pid, as_of=date(2026, 2, 20))[0]
+    full = overview._latest_breakdowns(conn, pid)[0]
+
+    assert sorted(r["label"] for r in early["rows"]) == ["2026-01", "2026-02"]
+    assert len(full["rows"]) == 4  # 기준일이 없으면 전부
+
+
+def test_korean_month_labels_are_cut_too_and_non_month_labels_are_kept(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "05_월별보고.md")
+    _doc(conn, pid, 2, "06_채널보고.md")
+    _breakdown(conn, pid, 1, "월별 순매출", [("2026년 1월", 10), ("2026년 2월", 20), ("2026년 3월", 30)], period=None)
+    _breakdown(conn, pid, 2, "채널별 매출", [("온라인", 60), ("매장", 40)], period=None)
+
+    tables = {b["name"]: b for b in overview._latest_breakdowns(conn, pid, as_of=date(2026, 2, 5))}
+
+    assert [r["label"] for r in sorted(tables["월별 순매출"]["rows"], key=lambda r: r["label"])] == ["2026년 1월", "2026년 2월"]
+    assert len(tables["채널별 매출"]["rows"]) == 2  # 월이 아닌 라벨은 기준일과 상관없다
+
+
+def test_a_monthly_table_with_no_month_left_is_dropped(conn, seeded):
+    pid = seeded["사내 문서 검색 포털"]
+    _doc(conn, pid, 1, "05_월별보고.md")
+    _breakdown(conn, pid, 1, "월별 반품률", [("2026-03", 2.1), ("2026-04", 2.8)], unit="%", period=None)
+
+    assert overview._latest_breakdowns(conn, pid, as_of=date(2026, 1, 15)) == []

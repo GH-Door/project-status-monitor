@@ -16,7 +16,7 @@ function scopePicker(d) {
   const pick = (e) => { state.scope = e.target.value; closeLayoutEditor(); rerender(); };  // 편집 패널은 프로젝트마다 따로라 닫는다
   return el("label", { class: "scope-pick small" }, "프로젝트 ",
     el("select", { "aria-label": "프로젝트 선택", onchange: pick },
-      d.scopes.map((s) => el("option", { value: s.scope, selected: s.scope === d.scope }, `${s.scope} (지표 ${s.count})`))));
+      d.scopes.map((s) => el("option", { value: s.scope, selected: s.scope === d.scope }, `${s.name ? `${s.name} (${s.scope})` : s.scope} · 지표 ${s.count}`))));
 }
 
 // 상단 띠: 상태·목표 한 줄(회사 이름은 사이드바에 있다) + 알림은 작은 칩(세로 공간을 쓰지 않는다)

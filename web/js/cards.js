@@ -3,7 +3,7 @@ import { budgetBar } from "./charts.js";
 import { donut } from "./donut.js";
 import { el, fill } from "./dom.js";
 import { fit } from "./fit.js";
-import { compact, fmtValue, pct1 } from "./format.js";
+import { chartTitle, compact, fmtValue, isMonthAxis, monthShort, pct1, statsLine } from "./format.js";
 import { seriesColor } from "./palette.js";
 import { roles } from "./slots.js";
 
@@ -22,7 +22,7 @@ export function chartCard({ title, sub, forms, headers, rows, wide = false, boar
   const buttons = forms.length > 1 ? forms.map((f, i) => el("button", { type: "button", "aria-pressed": String(i === 0), onclick: () => { active = i; asTable = false; draw(); } }, f.label)) : [];
   const draw = () => {
     fill(body, asTable ? el("div", { class: "table-scroll" }, el("table", { class: "tnum" }, el("thead", {}, el("tr", {}, headers.map((h, i) => el("th", { class: i ? "r" : "" }, h)))),
-      el("tbody", {}, rows.map((r) => el("tr", {}, r.map((c, i) => el("td", { class: i ? "r" : "" }, c))))))) : [forms[active].node, note && el("p", { class: "cap" }, note)]);
+      el("tbody", {}, rows.map((r) => el("tr", {}, r.map((c, i) => el("td", { class: i ? "r" : "" }, c))))))) : forms[active].node);
     toggle.textContent = asTable ? "그래프" : "표";
     buttons.forEach((b, i) => b.setAttribute("aria-pressed", String(!asTable && i === active)));
   };
@@ -30,16 +30,18 @@ export function chartCard({ title, sub, forms, headers, rows, wide = false, boar
   draw();
   return el("section", { class: `card${board ? " bc" : ""}${wide ? " wide" : ""}` },
     el("div", { class: "card-head" }, el("div", {}, el("h3", { title: sub || null }, title), sub && el("p", {}, sub)),
-      el("div", { class: "card-tools" }, buttons.length ? el("div", { class: "seg-ctl", role: "group", "aria-label": "차트 형식" }, buttons) : null, toggle)), body);
+      el("div", { class: "card-tools" }, buttons.length ? el("div", { class: "seg-ctl", role: "group", "aria-label": "차트 형식" }, buttons) : null, toggle)), body,
+    [].concat(note ?? []).map((line) => el("p", { class: "cap card-note" }, line)));  // 스크롤되는 본문 밖에 둔다(가로 막대가 길어도 줄이 겹치지 않는다)
 }
 
 // ---- 표(group) → 여러 형식
 function formSet(g, board) {
   const series = g.series.map((s, i) => ({ ...s, color: seriesColor(i) })), shown = series.slice(0, 4), r = roles(g);
-  const shape = { labels: g.labels, unit: g.unit }, aria = `${g.title} ${shown.map((s) => s.name).join(", ")}`;
+  const monthAxis = isMonthAxis(g.labels);  // 시간은 가로(x)축에 두고 라벨은 YY.MM으로 줄인다. 전체 라벨은 툴팁
+  const shape = { labels: monthAxis ? g.labels.map(monthShort) : g.labels, titles: monthAxis ? g.labels : g.label_titles, unit: g.unit, thin: monthAxis }, aria = `${g.title} ${shown.map((s) => s.name).join(", ")}`;
   // 출고 = 순판매 + 반품이라 셋을 한 막대에 쌓으면 같은 수량이 두 번 센다. 순판매·반품이 있으면 출고(합계)는 쌓지 않는다.
   const parts = shown.some((s) => /순판매/.test(s.name)) && shown.some((s) => /반품/.test(s.name)) ? shown.filter((s) => !/출고/.test(s.name)) : shown;
-  const short = g.labels.length <= 6 && Math.max(...g.labels.map((l) => l.length)) <= 9;
+  const short = monthAxis || (g.labels.length <= 6 && Math.max(...g.labels.map((l) => l.length)) <= 9);
   const hasNegative = shown.some((s) => s.values.some((v) => v < 0));  // 마이너스가 섞이면 쌓을 수 없다(합계가 어긋난다)
   const set = {
     grouped: { label: "묶음", node: wrap(shown, short ? sized(({ width, height }) => columnChart({ ...shape, series: shown, ariaLabel: aria, width, height }), board) : rowChart({ ...shape, series: shown })) },
@@ -81,15 +83,16 @@ function shareDonut(g) {
 }
 
 export function groupCard(g, { board = false, form = null } = {}) {
-  const { set, series } = formSet(g, board), single = series.length === 1;
+  const { set, series } = formSet(g, board);
   const key = form ?? defaultForm(g);
   const order = g.kind === "share" ? null : (ORDER[key] ?? ORDER.grouped).filter((k) => set[k]);
   const forms = g.kind === "share"
     ? [{ label: "도넛", node: shareDonut(g) }, { label: "띠", node: shareStripNode(g) }]
     : order.map((k) => set[k]);
-  const title = single && g.title !== series[0].name && !g.title.includes(series[0].name) ? `${g.title} · ${series[0].name}` : g.title;
-  return chartCard({ title, sub: `${g.period ?? "기간 미상"} · ${stripMd(g.document)}`, forms, board,
-    note: !board && series.length > 4 ? `계열이 ${series.length}개라 앞 4개만 그렸어요. 표에서 전체를 볼 수 있어요.` : null,
+  const title = chartTitle(g.title, series.slice(0, 4).map((x) => x.name), g.unit);
+  return chartCard({ title, sub: `${g.period ?? "기간 없음"} · ${stripMd(g.document)}`, forms, board,
+    note: [...(g.stats ?? []).map((st) => statsLine(st, g.unit, g.stats.length > 1)),
+      ...(!board && series.length > 4 ? [`계열이 ${series.length}개라 앞 4개만 그렸어요. 표에서 전체를 볼 수 있어요.`] : [])],
     headers: ["항목", ...series.map((s) => (g.unit === "원" ? `${s.name}(원)` : `${s.name}(${g.unit})`))],
     rows: g.labels.map((label, i) => [label, ...series.map((s) => cell(s.values[i], g.unit))]) });
 }

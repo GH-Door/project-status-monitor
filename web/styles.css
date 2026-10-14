@@ -20,6 +20,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .logo-link { display: block; width: fit-content; border-radius: var(--r-ctl); }
 .logo { display: block; width: 132px; mix-blend-mode: multiply; }
 .company-name { font-size: 17px; font-weight: 600; line-height: 1.3; padding: 0 4px; word-break: keep-all; }
+.company-name select { width: 100%; font: inherit; color: inherit; padding: 4px 2px; border: 1px solid var(--line, #d9dde3); border-radius: 6px; background: transparent; }
 .company-name small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); margin-top: 2px; }
 #nav { display: flex; flex-direction: column; gap: 4px; }
 #nav a { padding: 10px 12px; border-radius: var(--r-ctl); color: var(--ink-2); text-decoration: none; min-height: 40px; display: flex; align-items: center; gap: 8px; }
@@ -213,6 +214,7 @@ details summary { cursor: pointer; color: var(--blue); font-size: 13px; }
 .bc .hbar { gap: 7px; } .bc .hbar-row { grid-template-columns: minmax(56px, 96px) 1fr; gap: 8px; } .bc .burn-bar { height: 14px; } .bc .hbar-bar { height: 14px; } .bc .hbar-label { font-size: 12.5px; } .bc .hbar-val { font-size: 12px; } .bc .card-head h3 { font-size: 14px; } .bc .card-head p { display: none; }  /* 부제는 제목에 마우스를 올리면(title) 보인다 */
 .bc .card-head > div:first-child { min-width: 0; flex: 1; }
 .bc .card-head h3 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-note { flex: none; margin: 4px 0 0; font-size: 12px; }
 .card-body { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
 .card:not(.bc) .card-body { flex: none; overflow: visible; }
 .card:not(.bc) .form-wrap { flex: none; }  /* 높이가 정해지지 않은 카드에서는 내용 높이만큼 */
@@ -286,6 +288,9 @@ details summary { cursor: pointer; color: var(--blue); font-size: 13px; }
 .msg.user { justify-self: end; background: var(--blue); color: #fff; border-radius: 16px 16px 4px 16px; padding: 10px 16px; }
 .msg.bot { border: 1px solid var(--line); border-radius: 16px 16px 16px 4px; padding: 14px 18px; background: #fff; }
 .msg.hold { border-color: #f0c36d; background: var(--warn-bg); }
+.msg.general { border-color: var(--blue-soft); background: var(--tint); }
+.general-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; font-size: 13px; color: var(--ink-2); }
+.tag.general-tag { background: var(--blue-wash); color: var(--blue); font-weight: 600; }
 .evidence { display: grid; gap: 8px; }
 .ev { border-left: 3px solid var(--blue-soft); padding: 4px 12px; font-size: 13.5px; color: var(--ink-2); }
 .ev strong { color: var(--ink); display: block; font-size: 13px; } .ev img { max-width: 280px; border-radius: 8px; margin-top: 6px; }

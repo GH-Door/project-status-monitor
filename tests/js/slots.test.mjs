@@ -100,3 +100,16 @@ test("unused tables go to the detail gallery", () => {
   const used = [s.left2, s.tall, s.d1, s.d3].map((x) => x.group);
   assert.equal(s.rest.groups.length + used.length, base().charts.groups.length);
 });
+
+test("월 축 표는 마지막 칸에서도 가로 막대가 아니라 세로(묶음)로 그린다", () => {
+  const d = base();
+  d.charts.monthly = null;
+  d.charts.progress_curve = null;
+  const months = ["2026-01", "2026-02", "2026-03"];
+  d.charts.groups = ["반품률", "반품 접수", "재고", "폐기", "감액"].map((n) => g(`월별 ${n}`, "건", months, [n]));
+
+  const s = fillSlots(d);
+  const forms = [s.left1, s.left2, s.tall, s.d1, s.d2, s.d3].filter(Boolean).map((x) => x.form);
+
+  assert.ok(forms.length >= 1 && !forms.includes("rows"));
+});
