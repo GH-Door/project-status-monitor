@@ -24,6 +24,7 @@ eval/final/
 *.db-wal
 *.db-shm
 eval/
+ui-refs/
 
 # logs
 logs/
