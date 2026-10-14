@@ -345,3 +345,33 @@ def test_same_metric_in_two_sub_projects_is_not_flagged_as_a_conflict(setup):
 
     statuses = [r["status"] for r in setup.execute("SELECT status FROM business_metrics")]
     assert statuses == ["approved", "approved"]  # 다른 프로젝트의 값이므로 충돌이 아니다
+
+
+# --- 규칙 추출이 맡지 않는 문서(누적본·월별 보고 등)에서는 핵심 지표 이름도 버리지 않는다 ---
+
+def test_core_named_metrics_are_kept_when_rules_do_not_cover_the_document(setup):
+    setup.execute("UPDATE documents SET filename = '002_월간보고_상반기.md' WHERE id = 5")
+    setup.commit()
+    core = _kpi(name="순매출", value_text="39,350,000원", value=39_350_000, unit="원")
+    seen = {}
+
+    def fn(text, known):
+        seen["known"] = known
+        return _fn(kpis=[core])(text, known)
+
+    kpi.extract_and_save(setup, 1, 5, DOC, extract_fn=fn)
+
+    assert "순매출" in _saved(setup)  # 이 문서에서는 규칙이 순매출을 뽑지 않으므로 AI 지표로 남긴다
+    assert "순매출" not in seen["known"]  # 모델에게도 제외하라고 하지 않는다
+
+
+def test_the_model_is_told_to_skip_core_labels_only_for_rule_documents(setup):
+    seen = {}
+
+    def fn(text, known):
+        seen["known"] = known
+        return _fn()(text, known)
+
+    kpi.extract_and_save(setup, 1, 5, DOC, extract_fn=fn)  # FILE은 매출보고서라 규칙이 맡는다
+
+    assert "순매출" in seen["known"]

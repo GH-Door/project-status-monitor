@@ -10,6 +10,7 @@ import hashlib
 import re
 import sqlite3
 import unicodedata
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +27,8 @@ logger = get_logger("library")
 
 DEFAULT_COMPANY_NAME = "우리 회사"
 _EXCLUDED_NAME = re.compile(r"정답|answer|gold", re.IGNORECASE)
-_TEXT_MIME = {".md": "text/markdown", ".txt": "text/plain"}
+_TEXT_MIME = {".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv"}
+_RULE_MIME = frozenset({"text/markdown", "text/plain"})  # 핵심 지표·일정을 규칙으로 뽑는 형식(표로 바꾼 csv는 아니다)
 _OTHER_MIME = {  # 웹 업로드 전용. 폴더 동기화는 텍스트 문서만 다룬다(PDF·이미지는 판독 비용이 든다)
     ".pdf": "application/pdf",
     ".png": "image/png",
@@ -76,9 +78,30 @@ def _sha256(path: Path) -> str:
 # --- 회사(= 이 도구가 다루는 단 하나의 사업) ---
 
 
+# 이 요청이 보고 있는 회사의 id. 화면이 요청 헤더(X-Company-Id)로 알려 주면 api가 채운다. 비어 있으면 맨 처음 만든 사업.
+active_company_id: ContextVar[int | None] = ContextVar("active_company_id", default=None)
+_FOLDER_NUMBER_PREFIX = re.compile(r"^\d+[\s._-]*")
+
+
 def company_project(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    """이 도구의 회사. 맨 처음 만들어진 사업 하나다."""
-    return conn.execute("SELECT * FROM projects ORDER BY id LIMIT 1").fetchone()
+    """화면이 고른 회사. 고르지 않았거나 모르는 id면 맨 처음 만들어진 사업 하나다."""
+    chosen = active_company_id.get()
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (chosen,)).fetchone() if chosen is not None else None
+    return row or conn.execute("SELECT * FROM projects ORDER BY id LIMIT 1").fetchone()
+
+
+def folder_company_name(folder: str | None) -> str | None:
+    """폴더 이름 → 회사 이름. 정렬용 번호 접두사는 뗀다(`02_해솔에너지랩` → `해솔에너지랩`). 비면 None."""
+    name = _FOLDER_NUMBER_PREFIX.sub("", _nfc(folder or "").strip()).strip()
+    return name or None
+
+
+def list_companies(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT p.id, p.name FROM projects p JOIN project_members m ON m.project_id = p.id WHERE m.user_id = ? ORDER BY p.id",
+        (user_id,),
+    ).fetchall()
+    return [{"id": r["id"], "name": r["name"]} for r in rows]
 
 
 def default_company_name(root: Path) -> str:
@@ -91,19 +114,28 @@ def default_company_name(root: Path) -> str:
     return DEFAULT_COMPANY_NAME
 
 
-def ensure_company(conn: sqlite3.Connection, owner_id: int, root: Path = RAG_DOCS_DIR) -> tuple[int, str, bool]:
-    """(project_id, Dify dataset_id, 새로 만들었는지). 지식베이스가 없으면 만든다."""
-    row = company_project(conn)
+def _named_company(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
+    return next((r for r in conn.execute("SELECT * FROM projects ORDER BY id") if _nfc(r["name"]) == name), None)
+
+
+def ensure_company(
+    conn: sqlite3.Connection, owner_id: int, root: Path = RAG_DOCS_DIR, name: str | None = None
+) -> tuple[int, str, bool]:
+    """(project_id, Dify dataset_id, 새로 만들었는지). 지식베이스가 없으면 만든다.
+
+    name이 있으면(폴더 이름에서 온 회사 이름) 같은 이름의 회사를 쓰고 없으면 새로 만든다. 없으면 화면이 고른 회사.
+    """
+    row = _named_company(conn, name) if name else company_project(conn)
     created = row is None
     if created:
-        name = default_company_name(root)
+        name = name or default_company_name(root)
         project_id = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,)).lastrowid
         conn.execute(
             "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, 'owner')",
             (project_id, owner_id),
         )
         conn.commit()
-        row = company_project(conn)
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()  # 방금 만든 회사(첫 회사가 아니다)
     require_project_access(conn, owner_id, row["id"], "approve")
     dataset_id = row["dify_dataset_id"]
     if not dataset_id:
@@ -137,6 +169,19 @@ def _has_indexed_asset(conn: sqlite3.Connection, document_id: int) -> bool:
     )
 
 
+def document_text(path: Path) -> str | None:
+    """지표 추출에 쓸 글. md·txt는 원문, csv는 마크다운 표, 글자가 있는 pdf는 페이지 글. 이미지·스캔 pdf는 None."""
+    suffix = path.suffix.lower()
+    if suffix in (".md", ".txt"):
+        return path.read_text(encoding="utf-8")
+    if suffix == ".csv":
+        return ingest.csv_to_markdown(ingest.read_text_file(path)) or None
+    if suffix == ".pdf":
+        text = ingest.pdf_text(path)
+        return text if len(text) >= ingest.MIN_EXTRACTABLE_TEXT_CHARS else None
+    return None
+
+
 def guess_mime(path: Path) -> str | None:
     """등록 가능한 형식이면 MIME, 아니면 None."""
     return _TEXT_MIME.get(path.suffix.lower()) or _OTHER_MIME.get(path.suffix.lower())
@@ -146,7 +191,7 @@ def _save_rule_metrics(
     conn: sqlite3.Connection, project_id: int, document_id: int, path: Path, mime_type: str
 ) -> None:
     """md/txt의 핵심 지표·일정 후보를 규칙으로 저장한다. 같은 (문서, 지표)는 건드리지 않으므로 여러 번 불러도 된다."""
-    if mime_type not in _TEXT_MIME.values():
+    if mime_type not in _RULE_MIME:
         return
     text = path.read_text(encoding="utf-8")
     metrics.save_candidates(conn, project_id, document_id, text)
@@ -185,8 +230,6 @@ def extract_kpis_once(
     conn: sqlite3.Connection, project_id: int, document_id: int, path: Path
 ) -> kpi.ExtractResult | None:
     """문서의 회사별 지표(LLM)를 아직 안 뽑았으면 뽑는다. 성공해야 '뽑음'으로 표시해 다음 동기화에서 다시 시도한다."""
-    if path.suffix.lower() not in _TEXT_MIME:
-        return None
     done = conn.execute(
         "SELECT kpi_extracted_at, export_approved, filename FROM documents WHERE id = ?", (document_id,)
     ).fetchone()
@@ -194,7 +237,9 @@ def extract_kpis_once(
         return None  # 반출 승인이 없는 문서는 외부 AI로 보내지 않는다
     if _UNAPPROVED_MARK in _nfc(done["filename"]):
         return None  # 미승인 문서는 검색에는 쓰여도 공식 지표를 만들지 않는다
-    text = path.read_text(encoding="utf-8")
+    text = document_text(path)
+    if text is None:
+        return None  # 이미지·스캔 pdf처럼 글이 없으면 지표를 뽑지 않는다(검색용 판독은 색인 때 이미 했다)
     status = ingest.header_status(text)
     if status and status != ingest.CURRENT_STATUS:
         return None  # 과거판·초안·승인 대기 문서의 값이 회사 공식 지표로 올라오지 않게 한다

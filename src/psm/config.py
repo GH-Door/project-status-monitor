@@ -82,6 +82,7 @@ PRICE_USD_PER_1M_EMBEDDING_TOKENS = 0.02  # text-embedding-3-small 자리값 —
 ALLOWED_MIME_TYPES = {
     "text/plain",
     "text/markdown",
+    "text/csv",
     "application/pdf",
     "image/png",
     "image/jpeg",

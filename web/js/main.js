@@ -1,3 +1,5 @@
+import { api } from "./api.js";
+import { setCompanyId } from "./company.js";
 import { el, toast } from "./dom.js";
 import { state, loadCompany } from "./state.js";
 import { syncFolder } from "./sync.js";
@@ -23,6 +25,17 @@ function drawNav() {
 
 let showToken = 0;
 
+// 사이드바 회사 이름. 회사가 둘 이상이면 고를 수 있다(고르면 모든 화면이 그 회사 기준으로 바뀐다).
+async function drawCompany(c) {
+  const box = document.getElementById("company-name");
+  if (c.empty) return box.replaceChildren();
+  const companies = await api.get("/api/companies").catch(() => []);
+  if (companies.length < 2) return box.replaceChildren(c.company.name);
+  const choose = (e) => { setCompanyId(e.target.value); state.scope = null; show(); };  // 하위 프로젝트 선택은 회사마다 다르다
+  box.replaceChildren(el("select", { "aria-label": "회사 선택", onchange: choose },
+    companies.map((co) => el("option", { value: co.id, selected: co.id === c.company.id }, co.name))));
+}
+
 async function show() {
   const token = ++showToken;  // 늦게 끝난 이전 화면이 지금 화면을 덮어쓰지 않게 한다
   const route = ROUTES.find(([id]) => id === currentKey()) ?? ROUTES[0];
@@ -40,16 +53,19 @@ async function show() {
     toast(error.message, true);
   }
   loadCompany().then((c) => {  // 사이드바의 회사 이름과 확인 필요 개수
-    document.getElementById("company-name").replaceChildren(...(c.empty ? [] : [c.company.name]));
     drawNav();
+    return drawCompany(c);
   }).catch(() => {});
 }
 
 const asof = document.getElementById("asof");
+const todayKst = () => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(new Date());  // YYYY-MM-DD. 서버의 기본 기준일(오늘, KST)과 같다
+asof.value = todayKst();  // 비워 두면 서버가 오늘을 쓰지만 화면에는 "연도. 월. 일."로 보인다 — 오늘 날짜를 보여 준다
 asof.addEventListener("change", () => { state.asOf = asof.value || null; show(); });
+asof.addEventListener("blur", () => { if (!asof.value) { asof.value = todayKst(); state.asOf = null; show(); } });  // 지우거나 덜 입력하면(0001. 월. 일.) 오늘로 돌아간다
 document.getElementById("asof-doc").addEventListener("click", () => { asof.value = state.asOf = "2026-10-01"; show(); });
 document.getElementById("home").addEventListener("click", () => { if (location.hash === "#/dashboard") window.scrollTo({ top: 0 }); });  // 이미 대시보드면 맨 위로
-document.getElementById("sync").addEventListener("click", () => syncFolder(show));
+document.getElementById("sync").addEventListener("click", () => syncFolder(() => { state.scope = null; return show(); }));
 document.addEventListener("psm:rerender", show);
 window.addEventListener("hashchange", () => { show(); view.focus(); });
 show();

@@ -66,6 +66,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 # 로그인이 없는 서버다. 다른 사이트의 페이지가 localhost로 보내는 요청(CSRF)과 DNS 리바인딩을 막는다.
 CSRF_HEADER = "x-requested-with"
 CSRF_VALUE = "psm"
+COMPANY_HEADER = "x-company-id"  # 화면이 지금 보고 있는 회사 id
 ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",") if h.strip()]
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _NO_COMPANY = "아직 회사 문서가 없습니다. 문서 폴더에 md 파일을 넣고 [폴더 동기화]를 누르세요."
@@ -101,6 +102,8 @@ async def _guard(request: Request, call_next):
         and request.headers.get(CSRF_HEADER) != CSRF_VALUE
     ):
         return JSONResponse({"detail": "허용되지 않은 요청입니다"}, status_code=403)
+    chosen = request.headers.get(COMPANY_HEADER, "")
+    library.active_company_id.set(int(chosen) if chosen.isdigit() else None)  # 모르는 id면 library가 첫 회사로 돌린다
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -281,7 +284,7 @@ def _save_upload(upload: UploadFile) -> tuple[Path, str]:
     name = Path(upload.filename or "").name  # 경로 조작 방지 — 파일명만 남긴다
     mime = library.guess_mime(Path(name)) if name else None
     if mime is None:
-        raise HTTPException(400, "지원하지 않는 형식입니다 (md, txt, pdf, png, jpg, webp)")
+        raise HTTPException(400, "지원하지 않는 형식입니다 (md, txt, csv, pdf, png, jpg, webp)")
     if library.is_excluded_name(name):
         raise HTTPException(400, "정답지·숨김 파일로 보이는 이름은 올릴 수 없습니다 (정답·answer·gold, _ 접두)")
     dest = UPLOAD_DIR / uuid4().hex / name
@@ -300,16 +303,23 @@ def _save_upload(upload: UploadFile) -> tuple[Path, str]:
     return dest, mime
 
 
+@app.get("/api/companies")
+def get_companies() -> list[dict]:
+    with _db() as (conn, user_id):
+        return library.list_companies(conn, user_id)
+
+
 @app.post("/api/documents")
 def upload_document(
     file: Annotated[UploadFile, File()],
     export_approved: Annotated[bool, Form()] = False,
+    company: Annotated[str | None, Form()] = None,
 ) -> dict:
-    """웹 업로드. 회사 문서 DB에 추가한다. 반출 승인 없이는 등록하지 않는다."""
+    """웹 업로드. 폴더 이름(company)이 있으면 그 이름의 회사에, 없으면 지금 보는 회사에 추가한다. 반출 승인 없이는 등록하지 않는다."""
     dest, mime = _save_upload(file)
     try:
         with _db() as (conn, user_id):
-            project_id, dataset_id, _ = library.ensure_company(conn, user_id, RAG_DOCS_DIR)
+            project_id, dataset_id, _ = library.ensure_company(conn, user_id, RAG_DOCS_DIR, name=library.folder_company_name(company))
             document_id, is_new = library.index_file(
                 conn, project_id, user_id, dataset_id, dest, mime, export_approved
             )
@@ -318,6 +328,7 @@ def upload_document(
         shutil.rmtree(dest.parent, ignore_errors=True)  # 원본은 ingest가 originals/에 보관한다
     return {
         "document_id": document_id,
+        "company_id": project_id,
         "is_new": is_new,
         "kpis": (extracted.kpis + extracted.breakdowns) if extracted else 0,
         "note": extracted.error if extracted else None,

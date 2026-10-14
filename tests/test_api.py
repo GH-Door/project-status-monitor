@@ -489,3 +489,44 @@ def test_company_layout_follows_the_selected_project_only(client, tmp_path):
     client.put("/api/dashboard/layout", params={"scope": "N01-P01"}, json={"widgets": [_tile("승인 예산")]})
 
     assert client.get("/api/company", params={"scope": "N01-P02"}).json()["layout"]["custom"] is False
+
+
+# --- 여러 회사: 폴더 이름이 회사를 정하고, 요청 헤더가 현재 회사를 정한다 ---
+
+def _upload(client, name, text, company=None):
+    data = {"export_approved": "true", **({"company": company} if company else {})}
+    return client.post("/api/documents", files={"file": (name, text.encode(), "text/markdown")}, data=data).json()
+
+
+def test_uploading_with_a_folder_name_creates_that_company_and_reports_its_id(client):
+    first = _upload(client, "a.md", "첫 회사의 충분히 긴 본문입니다 1.", company="01_라온공간워크스")
+    second = _upload(client, "b.md", "둘째 회사의 충분히 긴 본문입니다 2.", company="02_해솔에너지랩")
+
+    names = {c["name"]: c["id"] for c in client.get("/api/companies").json()}
+    assert set(names) == {"라온공간워크스", "해솔에너지랩"}  # 번호 접두사는 뗀다
+    assert first["company_id"] == names["라온공간워크스"] and second["company_id"] == names["해솔에너지랩"]
+
+
+def test_uploading_to_an_existing_company_name_reuses_it(client):
+    a = _upload(client, "a.md", "같은 회사의 충분히 긴 본문입니다 1.", company="02_해솔에너지랩")
+    b = _upload(client, "b.md", "같은 회사의 충분히 긴 본문입니다 2.", company="해솔에너지랩")
+
+    assert a["company_id"] == b["company_id"] and len(client.get("/api/companies").json()) == 1
+
+
+def test_company_header_selects_which_company_the_dashboard_shows(client):
+    a = _upload(client, "a.md", "첫 회사의 충분히 긴 본문입니다 1.", company="01_라온공간워크스")
+    b = _upload(client, "b.md", "둘째 회사의 충분히 긴 본문입니다 2.", company="02_해솔에너지랩")
+
+    shown = lambda cid: client.get("/api/company", headers={"X-Company-Id": str(cid)}).json()["company"]["name"]
+
+    assert shown(b["company_id"]) == "해솔에너지랩" and shown(a["company_id"]) == "라온공간워크스"
+    assert client.get("/api/company").json()["company"]["name"] == "라온공간워크스"  # 헤더가 없으면 첫 회사
+
+
+def test_an_unknown_company_header_falls_back_to_the_first_company(client):
+    _upload(client, "a.md", "첫 회사의 충분히 긴 본문입니다 1.", company="01_라온공간워크스")
+
+    body = client.get("/api/company", headers={"X-Company-Id": "99999"}).json()
+
+    assert body["company"]["name"] == "라온공간워크스"
