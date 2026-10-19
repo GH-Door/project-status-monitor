@@ -1,6 +1,6 @@
 """웹 API(FastAPI) + 정적 프론트(web/). 도메인 로직은 기존 모듈을 그대로 부르고, 여기는 입출력만 맡는다.
 
-이 도구는 한 회사가 쓴다 — 모든 엔드포인트가 그 회사 하나를 대상으로 하고, 사업(회사) 선택은 없다.
+기업 폴더별 회사를 선택한다. 선택 헤더가 없는 기존 호출은 최초 회사를 대상으로 한다.
 로그인 없이 데모 관리자로 동작한다(팀장 피드백). 서버측 권한 검사(auth.py)는 그대로 거친다.
 요청마다 sqlite 연결을 새로 연다 — 스레드풀에서 도는 동기 엔드포인트와 연결을 공유하지 않기 위해서다.
 """
@@ -75,7 +75,10 @@ _NO_COMPANY = "아직 회사 문서가 없습니다. 문서 폴더에 md 파일�
 def _db() -> Iterator[tuple[sqlite3.Connection, int]]:
     conn = connect(DB_PATH)
     try:
-        yield conn, demo_user_id(conn)
+        user_id = demo_user_id(conn)
+        if library.active_company_id.get() is not None:
+            _company(conn, user_id)
+        yield conn, user_id
     finally:
         conn.close()
 
@@ -101,7 +104,14 @@ async def _guard(request: Request, call_next):
         and request.headers.get(CSRF_HEADER) != CSRF_VALUE
     ):
         return JSONResponse({"detail": "허용되지 않은 요청입니다"}, status_code=403)
-    response = await call_next(request)
+    selected = request.headers.get("x-company-id")
+    if selected is not None and (not selected.isascii() or not selected.isdecimal() or len(selected) > 15 or int(selected) < 1):
+        return JSONResponse({"detail": "기업 선택값이 올바르지 않습니다"}, status_code=422)
+    token = library.active_company_id.set(int(selected) if selected is not None else None)
+    try:
+        response = await call_next(request)
+    finally:
+        library.active_company_id.reset(token)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     return response
@@ -158,6 +168,34 @@ def _company(conn: sqlite3.Connection, user_id: int, action: str = "read") -> sq
 
 
 # --- 회사 대시보드 ---
+
+
+class FolderCompanyBody(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+
+
+@app.get("/api/companies")
+def list_companies() -> list[dict]:
+    with _db() as (conn, user_id):
+        rows = conn.execute(
+            "SELECT p.id, p.name, COUNT(d.id) AS documents, f.name AS folder_name "
+            "FROM projects p LEFT JOIN documents d ON d.project_id = p.id "
+            "LEFT JOIN company_folders f ON f.project_id = p.id "
+            "WHERE EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = p.id AND m.user_id = ?) "
+            "OR EXISTS (SELECT 1 FROM users u WHERE u.id = ? AND u.is_admin = 1) "
+            "GROUP BY p.id ORDER BY p.id", (user_id, user_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.post("/api/companies")
+def create_folder_company(body: FolderCompanyBody) -> dict:
+    if any(c in body.name for c in ("/", "\\", "\x00")) or body.name in (".", ".."):
+        raise HTTPException(422, "기업 폴더 이름을 확인하세요")
+    with _db() as (conn, user_id):
+        company_id = library.folder_company(conn, user_id, body.name)
+        row = conn.execute("SELECT id, name FROM projects WHERE id = ?", (company_id,)).fetchone()
+        return dict(row)
 
 
 @app.get("/api/company")
@@ -261,6 +299,8 @@ def get_documents() -> list[dict]:
 
 @app.post("/api/library/sync")
 def sync_library() -> dict:
+    if library.active_company_id.get() is not None:
+        raise HTTPException(409, "기업 문서는 화면의 [폴더 동기화]에서 해당 기업 폴더를 선택해 주세요.")
     with _db() as (conn, user_id):
         result = library.sync_folder(conn, user_id, root=RAG_DOCS_DIR)
     return {**result.__dict__, "errors": list(result.errors), "notes": list(result.notes)}
@@ -314,11 +354,16 @@ def upload_document(
                 conn, project_id, user_id, dataset_id, dest, mime, export_approved
             )
             extracted = library.extract_kpis_once(conn, project_id, document_id, dest)
+            reused_index = conn.execute(
+                "SELECT 1 FROM asset_index_links l JOIN assets a ON a.id=l.asset_id WHERE a.document_id=? LIMIT 1",
+                (document_id,),
+            ).fetchone() is not None
     finally:
         shutil.rmtree(dest.parent, ignore_errors=True)  # 원본은 ingest가 originals/에 보관한다
     return {
         "document_id": document_id,
         "is_new": is_new,
+        "reused_index": reused_index,
         "kpis": (extracted.kpis + extracted.breakdowns) if extracted else 0,
         "note": extracted.error if extracted else None,
     }
@@ -363,6 +408,10 @@ def ask(body: AskBody) -> dict:
         project = _company(conn, user_id)
         if not project["dify_dataset_id"]:
             raise HTTPException(409, "아직 Dify 지식베이스가 연결되지 않았습니다. [폴더 동기화]를 먼저 하세요.")
+        if body.document_ids:
+            owned = {d["id"] for d in library.list_documents(conn, project["id"])}
+            if not set(body.document_ids).issubset(owned):
+                raise HTTPException(422, "선택한 기업에 속하지 않는 문서가 포함되어 있습니다")
         prior = None
         if body.conversation_id is not None:
             conversations.get(conn, body.conversation_id, user_id, project["id"])  # 소유자·사업 확인

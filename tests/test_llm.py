@@ -1,10 +1,11 @@
-"""llm.py 테스트 — 재시도 규칙(§10)과 비용 산식만 네트워크 없이 검증."""
+"""가짜 API 응답으로 출력 계약·항목 불일치 차단·재시도를 검사한다. 모델 정확도 평가는 아니다."""
 
 import httpx
 import pytest
 from openai import APIStatusError
 
 from psm import llm
+from psm.models import EvidenceItem
 
 
 def _status_error(status_code: int) -> APIStatusError:
@@ -103,7 +104,10 @@ class _CapturingClient:
         from types import SimpleNamespace
 
         usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1)
-        message = SimpleNamespace(parsed=SimpleNamespace(query="재작성된 질문"))
+        parsed = SimpleNamespace(query="재작성된 질문")
+        if kwargs.get("response_format") is llm.CheckedAnswerResult:
+            parsed = llm.CheckedAnswerResult(items=[])
+        message = SimpleNamespace(parsed=parsed)
         return SimpleNamespace(usage=usage, choices=[SimpleNamespace(message=message)])
 
 
@@ -169,6 +173,7 @@ class _FakeCompletions:
 
 
 def _answer_with(monkeypatch, parsed):
+    monkeypatch.setattr(llm, "ITEM_CHECK", False)
     fake = _FakeCompletions(parsed)
     client = type("Client", (), {"chat": type("Chat", (), {"completions": fake})})
     monkeypatch.setattr(llm, "_client", lambda: client)
@@ -239,7 +244,9 @@ class _LengthCutClient(_CapturingClient):
         self.limits.append(kwargs["max_completion_tokens"])
         if len(self.limits) == 1:
             raise LengthFinishReasonError(completion=SimpleNamespace(usage=None, choices=[]))
-        parsed = llm.AnswerResult(answer="없습니다", cited_asset_ids=[], abstain=True, abstain_reason="근거 없음")
+        fields = {"answer": "", "cited_asset_ids": [], "abstain": True, "abstain_reason": "근거 없음"}
+        parsed = (llm.CheckedAnswerResult(items=[])
+                  if kwargs["response_format"] is llm.CheckedAnswerResult else llm.AnswerResult(**fields))
         usage = SimpleNamespace(prompt_tokens=1, completion_tokens=1)
         return SimpleNamespace(usage=usage, choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
 
@@ -250,7 +257,7 @@ def test_answer_retries_once_with_a_larger_output_limit_when_the_output_was_cut_
 
     result, _usage = llm.answer("질문", [], [], {})
 
-    assert result.abstain and client.limits == [llm.MAX_OUTPUT_TOKENS, llm.MAX_OUTPUT_TOKENS * 2]
+    assert result.abstain and client.limits == [llm.answer_output_limit(), llm.answer_output_limit() * 2]
 
 
 def test_answer_gives_up_when_even_the_larger_limit_cuts_the_output(monkeypatch):
@@ -273,20 +280,31 @@ def test_answer_gives_up_when_even_the_larger_limit_cuts_the_output(monkeypatch)
     assert len(calls) == 2  # 무한 재시도하지 않는다
 
 
-# --- 실험 G1: 답하기 전에 "질문이 묻는 것 / 근거가 말하는 것 / 같은가"를 채우게 하고, 다르면 유보로 강제한다 (ITEM_CHECK) ---
+# --- 항목별 판정 + 출처/인용문을 서버에서 대조한다. 가짜 응답이며 모델 성능 평가는 아니다. ---
 
-def _checked_client(monkeypatch, **fields):
+def _checked_client(monkeypatch, items):
     from types import SimpleNamespace
 
-    parsed = llm.CheckedAnswerResult(**{
-        "asked": "진루상사 / 입금액 / 2026-09", "found": "진루상사 / 청구 합계 / 2026-09", "same": False,
-        "answer": "입금액은 98,540,200원이다", "cited_asset_ids": [1], "abstain": False, "evidence_quote": "청구 합계는 98,540,200원", **fields})
+    parsed = llm.CheckedAnswerResult(items=items)
     client = _CapturingClient()
     client.parse = lambda **kwargs: (setattr(client, "kwargs", kwargs), SimpleNamespace(
         usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
         choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))]))[1]
     monkeypatch.setattr(llm, "_client", lambda: client)
+    monkeypatch.setattr(llm, "ITEM_CHECK", True)
     return client
+
+
+def _item(**fields):
+    return llm.ItemEvidenceCheck(**{
+        "asked": "예시사업 / 청구 합계 / 2026-09", "found": "청구 합계 98,540,200원",
+        "status": "supported", "answer": "청구 합계는 98,540,200원입니다.",
+        "sources": [{"asset_id": 1, "quotes": ["청구 합계는 98,540,200원"]}], "reason": "", **fields,
+    })
+
+
+def _evidence(asset_id=1, text="청구 합계는 98,540,200원"):
+    return EvidenceItem(asset_id=asset_id, document_name=f"{asset_id}.md", content=text, is_visual=False)
 
 
 def _plain_client(monkeypatch):
@@ -301,19 +319,19 @@ def _plain_client(monkeypatch):
     return client
 
 
-def test_item_check_is_off_by_default_and_uses_the_plain_schema_and_prompt(monkeypatch):
+def test_item_check_can_be_disabled_for_a_comparison_using_the_plain_schema(monkeypatch):
     client = _plain_client(monkeypatch)
     monkeypatch.setattr(llm, "ITEM_CHECK", False)
 
     llm.answer("질문", [], [], {})
 
     assert client.kwargs["response_format"] is llm.AnswerResult
-    assert client.kwargs["messages"][0]["content"] == llm.ANSWER_SYSTEM_PROMPT
+    assert client.kwargs["messages"][0]["content"] == llm.ANSWER_SYSTEM_PROMPT + llm._PLAIN_ANSWER_RULES
 
 
 def test_when_the_asked_and_found_items_differ_the_answer_is_forced_to_abstain(monkeypatch):
-    client = _checked_client(monkeypatch, same=False)
-    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+    client = _checked_client(monkeypatch, [_item(asked="입금액", status="mismatch",
+        reason="청구 합계만 확인됩니다. 입금 내역이 필요합니다.")])
 
     result, _usage = llm.answer("입금액은?", [], [], {})
 
@@ -322,29 +340,115 @@ def test_when_the_asked_and_found_items_differ_the_answer_is_forced_to_abstain(m
     assert "입금액" in result.abstain_reason and "청구 합계" in result.abstain_reason  # 왜 유보했는지 두 항목이 보인다
 
 
-def test_when_the_items_match_the_answer_is_left_as_the_model_wrote_it(monkeypatch):
-    _checked_client(monkeypatch, same=True, asked="진루상사 / 청구 합계", found="진루상사 / 청구 합계")
-    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+def test_when_the_item_and_source_quote_match_the_answer_is_released(monkeypatch):
+    _checked_client(monkeypatch, [_item()])
 
-    result, _usage = llm.answer("청구 합계는?", [], [], {})
+    result, _usage = llm.answer("청구 합계는?", [_evidence()], [], {})
 
-    assert result.abstain is False and result.answer.startswith("입금액은") and result.cited_asset_ids == [1]
+    assert result.abstain is False and result.answer.startswith("청구 합계는") and result.cited_asset_ids == [1]
 
 
 def test_the_check_rules_are_added_to_the_prompt_when_enabled(monkeypatch):
-    client = _checked_client(monkeypatch, same=True)
-    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+    client = _checked_client(monkeypatch, [_item()])
 
     llm.answer("질문", [], [], {})
 
     system = client.kwargs["messages"][0]["content"]
-    assert system.startswith(llm.ANSWER_SYSTEM_PROMPT) and "asked" in system and "same" in system
+    assert system.startswith(llm.ANSWER_SYSTEM_PROMPT) and "items" in system and "quotes" in system
+    assert "abstain=true" not in system  # 존재하지 않는 출력 필드를 요구하지 않는다
 
 
-def test_a_model_that_already_abstained_keeps_its_own_reason(monkeypatch):
-    _checked_client(monkeypatch, same=False, abstain=True, abstain_reason="문서에 없음", answer="")
-    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+def test_a_missing_item_keeps_its_specific_reason(monkeypatch):
+    _checked_client(monkeypatch, [_item(status="missing", reason="입금 기록이 필요합니다.", answer="")])
 
     result, _usage = llm.answer("질문", [], [], {})
 
-    assert result.abstain and result.abstain_reason == "문서에 없음"
+    assert result.abstain and "입금 기록이 필요합니다." in result.abstain_reason
+
+
+@pytest.mark.parametrize("field", ["asked", "found", "answer"])
+def test_an_empty_item_check_does_not_release_an_answer_even_if_supported(monkeypatch, field):
+    _checked_client(monkeypatch, [_item(**{field: "  "})])
+
+    result, _usage = llm.answer("입금액은?", [_evidence()], [], {})
+
+    assert result.abstain and result.answer == "" and result.cited_asset_ids == []
+
+
+def test_partial_match_blocks_all_answer_claims_and_preserves_the_missing_item_reason(monkeypatch):
+    _checked_client(monkeypatch, [_item(), _item(asked="제외 범위", status="missing",
+        reason="계약에서 제외한 작업은 확인되지 않습니다. 계약 범위 자료가 필요합니다.")])
+
+    result, _usage = llm.answer("청구 합계와 제외 범위는?", [_evidence()], [], {})
+
+    assert result.abstain and result.evidence_quote == ""
+    assert "계약 범위 자료" in result.abstain_reason
+
+
+def test_abstention_drops_stray_answer_and_citations(monkeypatch):
+    _checked_client(monkeypatch, [_item(status="conflict", answer="지원되지 않는 값",
+        reason="서로 다른 입금액이 기록되어 승인 내역이 필요합니다.")])
+
+    result, _usage = llm.answer("입금액은?", [], [], {})
+
+    assert result.abstain and result.answer == "" and result.cited_asset_ids == []
+    assert result.evidence_quote == "" and "승인 내역이 필요합니다" in result.abstain_reason
+
+
+@pytest.mark.parametrize("sources", [
+    [],
+    [{"asset_id": 99, "quotes": ["청구 합계는 98,540,200원"]}],
+    [{"asset_id": 1, "quotes": []}],
+    [{"asset_id": 1, "quotes": [" "]}],
+    [{"asset_id": 1, "quotes": ["|"]}],
+    [{"asset_id": 1, "quotes": ["청구 합계는 98,540,201원"]}],
+    [{"asset_id": 1, "quotes": ["청구 합계는 98,540,200달러"]}],
+])
+def test_missing_fabricated_or_unprovided_sources_block_the_answer(monkeypatch, sources):
+    _checked_client(monkeypatch, [_item(sources=sources)])
+    result, _ = llm.answer("청구 합계는?", [_evidence()], [], {})
+    assert result.abstain and not result.answer and not result.cited_asset_ids and not result.evidence_quote
+
+
+def test_quote_found_in_another_document_does_not_validate_the_cited_document(monkeypatch):
+    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 2, "quotes": ["청구 합계는 98,540,200원"]}])])
+    result, _ = llm.answer("청구 합계는?", [_evidence(), _evidence(2, "입금 내역 없음")], [], {})
+    assert result.abstain and "인용문" in result.abstain_reason
+
+
+def test_valid_items_are_composed_in_question_order_with_deduplicated_citations(monkeypatch):
+    items = [_item(), _item(asked="확인 오류 건수", found="확인 오류 0건", answer="확인 오류는 0건입니다.",
+        sources=[{"asset_id": 1, "quotes": ["확인 오류 0건"]}])]
+    _checked_client(monkeypatch, items)
+    result, _ = llm.answer("청구 합계와 오류 건수는?", [_evidence(text="청구 합계는 98,540,200원\n확인 오류 0건")], [], {})
+    assert not result.abstain and result.cited_asset_ids == [1]
+    assert result.answer == "청구 합계는 98,540,200원입니다.\n확인 오류는 0건입니다."
+    assert "확인 오류 0건" in result.evidence_quote
+
+
+def test_table_headers_and_rows_can_be_separate_exact_spans(monkeypatch):
+    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 1, "quotes": ["회사: 예시회사", "항목 | 금액", "청구 합계 | 98,540,200원"]}])])
+    result, _ = llm.answer("청구 합계는?", [_evidence(text="회사: 예시회사\n\n항목 | 금액\n--- | ---\n청구 합계 | 98,540,200원")], [], {})
+    assert not result.abstain
+
+
+def test_only_unicode_and_whitespace_differences_are_tolerated(monkeypatch):
+    import unicodedata
+    _checked_client(monkeypatch, [_item()])
+    text = unicodedata.normalize("NFD", "청구 합계는\r\n  98,540,200원")
+    result, _ = llm.answer("청구 합계는?", [_evidence(text=text)], [], {})
+    assert not result.abstain
+
+
+def test_empty_item_list_cannot_release_a_vacuously_valid_answer(monkeypatch):
+    _checked_client(monkeypatch, [])
+    result, _ = llm.answer("질문", [_evidence()], [], {})
+    assert result.abstain
+
+
+def test_nested_item_schema_is_compatible_with_strict_structured_output():
+    from openai.lib._pydantic import to_strict_json_schema
+    schema = to_strict_json_schema(llm.CheckedAnswerResult)
+    for obj in [schema, *schema["$defs"].values()]:
+        assert obj["additionalProperties"] is False
+        assert set(obj["required"]) == set(obj["properties"])

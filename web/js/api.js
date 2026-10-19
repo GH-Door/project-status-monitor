@@ -1,7 +1,17 @@
 export class ApiError extends Error {}
 
+// 탭마다 별도로 유지하여 다른 기업을 연 탭이 현재 질문 범위를 바꾸지 않는다.
+let companyId = sessionStorage.getItem("psm.companyId");
+export const selectedCompanyId = () => companyId;
+export function selectCompany(id) {
+  companyId = id == null ? null : String(id);
+  if (companyId) sessionStorage.setItem("psm.companyId", companyId);
+  else sessionStorage.removeItem("psm.companyId");
+}
+
 async function call(method, url, body) {
   const init = { method, headers: { "X-Requested-With": "psm" } };  // 다른 사이트에서 온 요청과 구분(CSRF 방어)
+  if (companyId && url !== "/api/companies") init.headers["X-Company-Id"] = companyId;
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";

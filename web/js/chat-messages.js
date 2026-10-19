@@ -14,9 +14,8 @@ export const userMessage = (text) => el("div", { class: "msg user" }, text);
 // result: { answer, abstained, abstain_reason, evidence }. 재작성된 질문(rewritten_query)은 서버가 검색·평가에 쓰고 화면에는 보이지 않는다
 export function botMessage(result) {
   if (result.abstained) {
-    return el("div", { class: "msg bot hold" }, el("strong", {}, "답변을 유보했어요"),
-      el("p", {}, result.abstain_reason || "근거를 확인하지 못했어요."),
-      el("p", { class: "small" }, "질문에 문서에 나오는 이름이나 기간을 넣어 구체적으로 물어보세요."));
+    return el("div", { class: "msg bot hold" }, el("strong", {}, "요청한 내용을 확인하지 못했어요"),
+      el("p", {}, result.abstain_reason || "현재 검색된 자료에서 요청한 항목의 근거를 확인하지 못했어요."));
   }
   const source = sourceLine(result.evidence);
   return el("div", { class: "msg bot" }, el("p", { style: "white-space:pre-wrap" }, result.answer ?? result.content),

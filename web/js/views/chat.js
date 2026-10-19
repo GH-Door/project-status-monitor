@@ -86,7 +86,7 @@ export async function render() {
     fill(docsPane,
       el("div", { class: "row", style: "justify-content:space-between" }, el("h3", {}, "문서 선택"),
         el("button", { type: "button", class: "btn ghost small", onclick: () => { state.selectedDocs.clear(); drawDocs(); } }, "전체 해제")),
-      el("p", { class: "small muted" }, state.selectedDocs.size ? `${state.selectedDocs.size}개 문서 안에서만 답해요` : "고르지 않으면 이 회사의 모든 문서를 대상으로 해요"),
+      el("p", { class: "small muted" }, state.selectedDocs.size ? `${company.company.name} · 선택한 ${state.selectedDocs.size}개 문서 안에서만 답해요` : `${company.company.name}의 문서 ${docs.length}개만 대상으로 답해요. 다른 기업 문서는 검색하지 않아요.`),
       docs.length === 0 && el("p", { class: "muted small" }, "등록된 문서가 없어요."),
       docs.map((d) => el("label", { class: "doc-item" },
         el("input", { type: "checkbox", checked: state.selectedDocs.has(d.id), disabled: d.status === "pending",

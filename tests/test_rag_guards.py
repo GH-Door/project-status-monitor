@@ -310,7 +310,7 @@ def test_follow_up_searches_with_rewritten_query_and_passes_history_to_the_answe
     )
 
     assert seen["query"] == "정식 출시 이후 남은 일정은?"
-    assert seen["answer_args"] == ("정식 출시 이후 남은 일정은?", PRIOR)
+    assert seen["answer_args"] == ("그 다음 일정은?", PRIOR)  # 항목 확인은 사용자 원문을 기준으로 한다
     assert result.rewritten_query == "정식 출시 이후 남은 일정은?"
     # 재작성 호출도 예산 예약·정산을 거친다
     assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'settled'").fetchone()[0] == 2  # 재작성 + 답변
@@ -407,6 +407,40 @@ def test_returned_evidence_keeps_the_retrieved_chunk_for_display(conn, monkeypat
     result = rag.answer_question(conn, user_id=1, project_id=1, dataset_id="ds", question="총액?")
 
     assert [e.content for e in result.evidence] == ["머리글"]  # 근거 카드는 짧게 유지한다
+
+
+@pytest.mark.parametrize("quote, blocked", [("최종 청구액은 110원", False), ("최종 청구액은 120원", True)])
+def test_item_evidence_is_checked_against_the_full_model_context_without_an_extra_call(conn, monkeypatch, quote, blocked):
+    from types import SimpleNamespace
+
+    _seed_project(conn)
+    _seed_asset(conn, asset_id=1, project_id=1)
+    _set_full_text(conn, 1, "머리글\n최종 청구액은 110원")
+    monkeypatch.setattr(rag.dify, "retrieve", lambda *a, **k: [_hit(1, "머리글")])
+    monkeypatch.setattr(rag, "FULL_DOCUMENT_CONTEXT", True)
+    monkeypatch.setattr(rag, "VERIFY_ANSWERS", False)
+    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+    calls = []
+
+    def parse(**kwargs):
+        calls.append(kwargs)
+        parsed = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
+            asked="최종 청구액", found=quote, status="supported", answer=quote + "입니다.",
+            sources=[llm.ItemSource(asset_id=1, quotes=[quote])], reason="",
+        )])
+        return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=30, completion_tokens=20),
+            choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
+
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse))))
+    result = rag.answer_question(conn, 1, 1, "ds", "최종 청구액은?")
+    assert result.abstained is blocked
+    assert len(calls) == 1
+    assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'settled'").fetchone()[0] == 1
+    if not blocked:
+        assert result.text == "최종 청구액은 110원입니다."
+        assert [e.content for e in result.evidence] == ["머리글"]
+    else:
+        assert "인용문" in result.abstain_reason
 
 
 def test_chunk_is_used_when_the_full_text_is_missing(conn, monkeypatch):

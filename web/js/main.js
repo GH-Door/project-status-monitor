@@ -1,5 +1,6 @@
 import { el, toast } from "./dom.js";
-import { state, loadCompany } from "./state.js";
+import { api, selectedCompanyId, selectCompany } from "./api.js";
+import { state, loadCompany, resetCompanyState } from "./state.js";
 import { syncFolder } from "./sync.js";
 
 const ROUTES = [
@@ -23,6 +24,25 @@ function drawNav() {
 
 let showToken = 0;
 
+const companyPicker = document.getElementById("company-picker");
+async function drawCompanies() {
+  const companies = await api.get("/api/companies");
+  if (selectedCompanyId() && !companies.some(c => String(c.id) === selectedCompanyId())) {
+    selectCompany(null);
+    resetCompanyState();
+  }
+  companyPicker.replaceChildren(...companies.map(c => el("option", { value: c.id },
+    `${c.folder_name ? c.name : `${c.name} · 기존 문서`} (${c.documents}개)`)));
+  if (selectedCompanyId()) companyPicker.value = selectedCompanyId();
+  companyPicker.disabled = companies.length === 0;
+}
+companyPicker.addEventListener("change", () => {
+  selectCompany(companyPicker.value);
+  resetCompanyState();
+  // 진행 중인 이전 화면의 응답과 대화 상태도 함께 정리한다.
+  location.reload();
+});
+
 async function show() {
   const token = ++showToken;  // 늦게 끝난 이전 화면이 지금 화면을 덮어쓰지 않게 한다
   const route = ROUTES.find(([id]) => id === currentKey()) ?? ROUTES[0];
@@ -30,6 +50,7 @@ async function show() {
   document.title = `${route[1]} · AICHEMIST 사업 현황`;
   drawNav();
   try {
+    await drawCompanies();
     const { render } = await route[2]();
     const node = await render();
     if (token !== showToken) return;
@@ -40,6 +61,7 @@ async function show() {
     toast(error.message, true);
   }
   loadCompany().then((c) => {  // 사이드바의 회사 이름과 확인 필요 개수
+    if (token !== showToken) return;
     document.getElementById("company-name").replaceChildren(...(c.empty ? [] : [c.company.name]));
     drawNav();
   }).catch(() => {});

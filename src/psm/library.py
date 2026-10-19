@@ -1,6 +1,6 @@
 """RAG_문서 폴더 동기화와 문서 목록 — 폴더 안의 md 파일이 곧 한 회사의 문서 DB다.
 
-이 도구는 한 회사가 쓴다. 폴더(하위 폴더 포함)의 모든 문서가 그 회사 것이고, 회사는 DB에 하나뿐이다.
+선택한 기업 폴더(하위 폴더 포함)의 문서는 그 기업에 속한다. 기존 회사의 문서는 보존한다.
 정답지·숨김·"_"로 시작하는 파일/폴더는 검색 대상에서 뺀다. 이미 등록한 파일(같은 내용)은 다시 색인하지 않는다.
 """
 
@@ -10,6 +10,7 @@ import hashlib
 import re
 import sqlite3
 import unicodedata
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from psm import dify, ingest, kpi, metrics
+from psm import dify, index_reuse, ingest, kpi, metrics
 from psm.auth import require_project_access
 from psm.config import COMPANY_NAME, RAG_DOCS_DIR, TIMEZONE
 from psm.logging_config import get_logger
@@ -25,6 +26,8 @@ from psm.logging_config import get_logger
 logger = get_logger("library")
 
 DEFAULT_COMPANY_NAME = "우리 회사"
+# HTTP 요청별 선택. 다른 탭/요청의 선택이 서버 전역 상태를 바꾸지 않는다.
+active_company_id: ContextVar[int | None] = ContextVar("active_company_id", default=None)
 _EXCLUDED_NAME = re.compile(r"정답|answer|gold", re.IGNORECASE)
 _TEXT_MIME = {".md": "text/markdown", ".txt": "text/plain"}
 _OTHER_MIME = {  # 웹 업로드 전용. 폴더 동기화는 텍스트 문서만 다룬다(PDF·이미지는 판독 비용이 든다)
@@ -77,8 +80,29 @@ def _sha256(path: Path) -> str:
 
 
 def company_project(conn: sqlite3.Connection) -> sqlite3.Row | None:
-    """이 도구의 회사. 맨 처음 만들어진 사업 하나다."""
+    """선택한 회사. 선택이 없는 기존 호출은 최초 회사(기존 문서)를 유지한다."""
+    if (company_id := active_company_id.get()) is not None:
+        return conn.execute("SELECT * FROM projects WHERE id = ?", (company_id,)).fetchone()
     return conn.execute("SELECT * FROM projects ORDER BY id LIMIT 1").fetchone()
+
+
+def folder_company(conn: sqlite3.Connection, owner_id: int, name: str) -> int:
+    """폴더 이름별 회사를 재사용한다. 기존 회사/문서의 소속은 바꾸지 않는다."""
+    name = _nfc(name.strip())
+    with conn:
+        # 동시 등록도 같은 폴더에 회사가 중복 생성되지 않게 직렬화한다.
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT project_id FROM company_folders WHERE name = ?", (name,)).fetchone()
+        if row:
+            require_project_access(conn, owner_id, row["project_id"], "approve")
+            return row["project_id"]
+        company_id = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,)).lastrowid
+        conn.execute(
+            "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, 'owner')",
+            (company_id, owner_id),
+        )
+        conn.execute("INSERT INTO company_folders (name, project_id) VALUES (?, ?)", (name, company_id))
+    return company_id
 
 
 def default_company_name(root: Path) -> str:
@@ -94,6 +118,8 @@ def default_company_name(root: Path) -> str:
 def ensure_company(conn: sqlite3.Connection, owner_id: int, root: Path = RAG_DOCS_DIR) -> tuple[int, str, bool]:
     """(project_id, Dify dataset_id, 새로 만들었는지). 지식베이스가 없으면 만든다."""
     row = company_project(conn)
+    if row is None and active_company_id.get() is not None:
+        raise ValueError("선택한 기업을 찾을 수 없습니다")
     created = row is None
     if created:
         name = default_company_name(root)
@@ -107,7 +133,10 @@ def ensure_company(conn: sqlite3.Connection, owner_id: int, root: Path = RAG_DOC
     require_project_access(conn, owner_id, row["id"], "approve")
     dataset_id = row["dify_dataset_id"]
     if not dataset_id:
-        dataset_id = dify.create_dataset(row["name"])
+        # Dify 지식베이스 이름은 40자까지다. 화면에는 원래 기업명을 유지한다.
+        name = row["name"]
+        dataset_name = name if len(name) <= 40 else f"{name[:28]}-{row['id']}"
+        dataset_id = dify.create_dataset(dataset_name)
         conn.execute("UPDATE projects SET dify_dataset_id = ? WHERE id = ?", (dataset_id, row["id"]))
         conn.commit()
     return row["id"], dataset_id, created
@@ -167,6 +196,11 @@ def index_file(
     md/txt는 핵심 지표·일정 후보도 뽑는다. 폴더 동기화는 폴더에 넣는 행위를 반출 승인으로 본다.
     """
     existing = _existing_document_id(conn, project_id, path)
+    if existing is None:
+        reused = index_reuse.reuse_file(conn, project_id, user_id, path, mime_type, export_approved)
+        if reused is not None:
+            _save_rule_metrics(conn, project_id, reused, path, mime_type)
+            return reused, True
     if existing is not None:
         if _has_indexed_asset(conn, existing):
             _save_rule_metrics(conn, project_id, existing, path, mime_type)  # 멱등: 비어 있던 문서도 채운다

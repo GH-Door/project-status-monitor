@@ -36,14 +36,15 @@ NON_CURRENT_WEIGHT = 0.5  # 머리글의 status가 approved_current가 아닌 �
 DOC_TYPE_ROUTING = os.getenv("DOC_TYPE_ROUTING", "0") == "1"
 TYPE_MISMATCH_WEIGHT = 0.5  # 고른 유형이 아닌 문서의 점수 가중치(머리글에 유형이 없는 문서는 그대로)
 ROUTE_MAX_OUTPUT_TOKENS = 30  # 유형 이름 하나만 돌려받는다
-# 실험 G1(2026-10-12): 답하기 전에 "질문이 묻는 것 / 근거가 말하는 것 / 같은가"를 채우게 하고, 다르면 코드가 유보로 강제한다.
-# 위험 답변(유보해야 하는데 답함)이 모두 비슷한 항목·다른 프로젝트 값으로 둔갑한 경우라서 겨냥했다. 효과 측정 전이라 기본은 끈다. 켜려면 ITEM_CHECK=1
-ITEM_CHECK = os.getenv("ITEM_CHECK", "0") == "1"
+# 2026-10-19 사용자 승인: 같은 호출에서 항목별 의미 일치를 판단하고, 코드가 출처/인용문을 원문과 대조한다.
+# 실제 정확도·과잉 보류율은 사용자 평가 전이다. 이전 방식 비교 시 ITEM_CHECK=0으로 비활성화할 수 있다.
+ITEM_CHECK = os.getenv("ITEM_CHECK", "1") == "1"
 FULL_DOCUMENT_CONTEXT = os.getenv("FULL_DOCUMENT_CONTEXT", "1") == "1"
 MAX_IMAGES_PER_ANSWER = 3
 MAX_OUTPUT_TOKENS = 800
+ITEM_CHECK_MAX_OUTPUT_TOKENS = 1600  # 항목별 출처·인용문 기록 포함. 길이 초과 시 한 번만 두 배로 재시도
 KPI_MAX_OUTPUT_TOKENS = 3000  # 문서 1건에서 지표와 표를 한꺼번에 뽑는 호출의 출력 상한
-LLM_TEMPERATURE = 0  # 같은 입력이면 같은 답·같은 표가 나오게 한다(지표 추출이 실행마다 달라지던 원인)
+LLM_TEMPERATURE = 0  # 출력 변동을 줄인다. 같은 입력에 대한 동일 출력을 보장하지는 않는다.
 
 # --- 대화 맥락 (후속 질문 재작성·답변 참고용) ---
 HISTORY_MAX_TURNS = 6  # 질문-답 한 쌍이 1턴
