@@ -50,3 +50,9 @@ def _verifier_passes_by_default(monkeypatch, request):
     monkeypatch.setattr(
         llm, "verify_answer", lambda *a, **k: (llm.VerifyResult(matches=True, reason=""), llm.Usage(10, 5))
     )
+
+
+@pytest.fixture(autouse=True)
+def _general_chat_off(monkeypatch):
+    """일반 질문 기능은 서비스 기본이 켜짐이지만, 테스트는 분류 호출(OpenAI)이 새어 나가지 않게 꺼 두고 필요한 테스트가 직접 켠다."""
+    monkeypatch.setattr("psm.rag.GENERAL_CHAT", False)

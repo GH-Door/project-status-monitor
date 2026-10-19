@@ -68,10 +68,13 @@ async function show() {
 }
 
 const asof = document.getElementById("asof");
+const todayKst = () => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul" }).format(new Date());  // YYYY-MM-DD. 서버의 기본 기준일(오늘, KST)과 같다
+asof.value = todayKst();  // 비워 두면 서버가 오늘을 쓰지만 화면에는 "연도. 월. 일."로 보인다 — 오늘 날짜를 보여 준다
 asof.addEventListener("change", () => { state.asOf = asof.value || null; show(); });
+asof.addEventListener("blur", () => { if (!asof.value) { asof.value = todayKst(); state.asOf = null; show(); } });  // 지우거나 덜 입력하면(0001. 월. 일.) 오늘로 돌아간다
 document.getElementById("asof-doc").addEventListener("click", () => { asof.value = state.asOf = "2026-10-01"; show(); });
 document.getElementById("home").addEventListener("click", () => { if (location.hash === "#/dashboard") window.scrollTo({ top: 0 }); });  // 이미 대시보드면 맨 위로
-document.getElementById("sync").addEventListener("click", () => syncFolder(show));
+document.getElementById("sync").addEventListener("click", () => syncFolder(() => { state.scope = null; return show(); }));
 document.addEventListener("psm:rerender", show);
 window.addEventListener("hashchange", () => { show(); view.focus(); });
 show();

@@ -66,6 +66,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 # 로그인이 없는 서버다. 다른 사이트의 페이지가 localhost로 보내는 요청(CSRF)과 DNS 리바인딩을 막는다.
 CSRF_HEADER = "x-requested-with"
 CSRF_VALUE = "psm"
+COMPANY_HEADER = "x-company-id"  # 화면이 지금 보고 있는 회사 id
 ALLOWED_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,testserver").split(",") if h.strip()]
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _NO_COMPANY = "아직 회사 문서가 없습니다. 문서 폴더에 md 파일을 넣고 [폴더 동기화]를 누르세요."
@@ -104,7 +105,7 @@ async def _guard(request: Request, call_next):
         and request.headers.get(CSRF_HEADER) != CSRF_VALUE
     ):
         return JSONResponse({"detail": "허용되지 않은 요청입니다"}, status_code=403)
-    selected = request.headers.get("x-company-id")
+    selected = request.headers.get(COMPANY_HEADER)
     if selected is not None and (not selected.isascii() or not selected.isdecimal() or len(selected) > 15 or int(selected) < 1):
         return JSONResponse({"detail": "기업 선택값이 올바르지 않습니다"}, status_code=422)
     token = library.active_company_id.set(int(selected) if selected is not None else None)
@@ -193,7 +194,10 @@ def create_folder_company(body: FolderCompanyBody) -> dict:
     if any(c in body.name for c in ("/", "\\", "\x00")) or body.name in (".", ".."):
         raise HTTPException(422, "기업 폴더 이름을 확인하세요")
     with _db() as (conn, user_id):
-        company_id = library.folder_company(conn, user_id, body.name)
+        try:
+            company_id = library.folder_company(conn, user_id, body.name)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         row = conn.execute("SELECT id, name FROM projects WHERE id = ?", (company_id,)).fetchone()
         return dict(row)
 
@@ -203,8 +207,8 @@ def get_company(as_of: AsOf = None, scope: Scope = None) -> dict:
     with _db() as (conn, _):
         view = overview.company_view(conn, _today(as_of), scope or None)
         if not view["empty"]:
-            view["layout"] = dashboard.layout_view(conn, view["company"]["id"], view["scope"] or "")
-    return {**view, "llm_ready": llm.api_key_status()["configured"], "rag_dir": str(RAG_DOCS_DIR)}
+            view["layout"] = dashboard.layout_view(conn, view["company"]["id"], view["scope"] or "", _today(as_of))
+    return {**view, "llm_ready": llm.api_key_status()["configured"], "rag_dir": str(RAG_DOCS_DIR), "general_chat": rag.GENERAL_CHAT}
 
 
 class CompanyPatch(BaseModel):
@@ -321,7 +325,7 @@ def _save_upload(upload: UploadFile) -> tuple[Path, str]:
     name = Path(upload.filename or "").name  # 경로 조작 방지 — 파일명만 남긴다
     mime = library.guess_mime(Path(name)) if name else None
     if mime is None:
-        raise HTTPException(400, "지원하지 않는 형식입니다 (md, txt, pdf, png, jpg, webp)")
+        raise HTTPException(400, "지원하지 않는 형식입니다 (md, txt, csv, pdf, png, jpg, webp)")
     if library.is_excluded_name(name):
         raise HTTPException(400, "정답지·숨김 파일로 보이는 이름은 올릴 수 없습니다 (정답·answer·gold, _ 접두)")
     dest = UPLOAD_DIR / uuid4().hex / name
@@ -344,12 +348,16 @@ def _save_upload(upload: UploadFile) -> tuple[Path, str]:
 def upload_document(
     file: Annotated[UploadFile, File()],
     export_approved: Annotated[bool, Form()] = False,
+    company: Annotated[str | None, Form()] = None,
 ) -> dict:
-    """웹 업로드. 회사 문서 DB에 추가한다. 반출 승인 없이는 등록하지 않는다."""
+    """웹 업로드. 폴더 이름(company)이 있으면 그 이름의 회사에, 없으면 지금 보는 회사에 추가한다. 반출 승인 없이는 등록하지 않는다."""
     dest, mime = _save_upload(file)
     try:
         with _db() as (conn, user_id):
-            project_id, dataset_id, _ = library.ensure_company(conn, user_id, RAG_DOCS_DIR)
+            try:
+                project_id, dataset_id, _ = library.ensure_company(conn, user_id, RAG_DOCS_DIR, name=company)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
             document_id, is_new = library.index_file(
                 conn, project_id, user_id, dataset_id, dest, mime, export_approved
             )
@@ -362,6 +370,7 @@ def upload_document(
         shutil.rmtree(dest.parent, ignore_errors=True)  # 원본은 ingest가 originals/에 보관한다
     return {
         "document_id": document_id,
+        "company_id": project_id,
         "is_new": is_new,
         "reused_index": reused_index,
         "kpis": (extracted.kpis + extracted.breakdowns) if extracted else 0,
@@ -426,6 +435,8 @@ def ask(body: AskBody) -> dict:
         "answer": answer.text,
         "abstained": answer.abstained,
         "abstain_reason": answer.abstain_reason,
+        "errored": answer.errored,
+        "kind": answer.kind,
         "evidence": evidence,
         "conversation_id": conversation_id,
         "rewritten_query": answer.rewritten_query,
@@ -435,10 +446,10 @@ def ask(body: AskBody) -> dict:
 def _save_turn(conn: sqlite3.Connection, user_id: int, project_id: int, body: AskBody, answer, evidence: list[dict]) -> int:
     """질문·답을 대화에 저장한다. 장애로 못 답한 턴은 저장하지 않아 다시 물어도 맥락이 오염되지 않는다."""
     conversation_id = body.conversation_id or conversations.create(conn, project_id, user_id, body.question)
-    conversations.add_message(conn, conversation_id, "user", body.question)
+    conversations.add_message(conn, conversation_id, "user", body.question, kind=answer.kind)
     conversations.add_message(
         conn, conversation_id, "assistant", answer.text, rewritten_query=answer.rewritten_query,
-        evidence=evidence, abstained=answer.abstained, abstain_reason=answer.abstain_reason,
+        evidence=evidence, abstained=answer.abstained, abstain_reason=answer.abstain_reason, kind=answer.kind,
     )
     return conversation_id
 

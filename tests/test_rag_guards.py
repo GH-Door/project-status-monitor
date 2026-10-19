@@ -5,6 +5,53 @@ import pytest
 from psm import auth, llm, rag
 
 
+@pytest.mark.parametrize("pipeline", ["gates", "planner"])
+@pytest.mark.parametrize("fabricated", [False, True])
+def test_both_pipelines_keep_original_question_and_apply_exact_item_evidence(conn, monkeypatch, pipeline, fabricated):
+    from types import SimpleNamespace
+
+    from psm import llm_responses
+    from psm.planner import Plan
+
+    _seed_project(conn)
+    _seed_asset(conn, 1, 1)
+    text = "청구 합계는 100원입니다."
+    conn.execute("UPDATE assets SET description_text=? WHERE id=1", (text,))
+    conn.execute("UPDATE documents SET mime_type='text/markdown', filename='doc.md' WHERE id=1")
+    conn.commit()
+    monkeypatch.setattr(rag, "GENERAL_CHAT", True)
+    monkeypatch.setattr(rag, "ANSWER_PIPELINE", pipeline)
+    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+    monkeypatch.setattr(llm, "rewrite_question", lambda *a, **k: ("검색용 독립 질문", llm.Usage(1, 1)))
+    monkeypatch.setattr(llm_responses, "plan_question", lambda *a, **k: (Plan("document", query="검색용 독립 질문"), llm.Usage(1, 1)))
+    seen = {}
+
+    def retrieve(ds, query, **kwargs):
+        seen["search"] = query
+        return [_hit(1, text)]
+
+    def parse(**kwargs):
+        seen["answer_input"] = kwargs["messages"][1]["content"][0]["text"]
+        result = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
+            asked="청구 합계", found="청구 합계 100원", status="supported", answer="청구 합계는 100원입니다.",
+            sources=[llm.ItemSource(asset_id=1, quotes=["청구 합계는 101원입니다." if fabricated else text])], reason="")])
+        assert kwargs["response_format"] is llm.CheckedAnswerResult
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=result))],
+                               usage=SimpleNamespace(prompt_tokens=10, completion_tokens=10))
+
+    monkeypatch.setattr(rag.dify, "retrieve", retrieve)
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse))))
+    question = "우리 사업 청구 합계는 얼마야?"
+    result = rag.answer_question(conn, 1, 1, "ds", question, history=[{"role":"user", "content":"그 사업 이야기를 해줘", "kind":"document"}])
+    assert seen["search"] == "검색용 독립 질문"
+    assert seen["answer_input"].startswith("질문: " + question)
+    assert result.abstained is fabricated
+    assert result.kind == "document"
+    assert {"retrieve", "answer"} <= result.timings.keys()
+    if fabricated:
+        assert result.evidence == [] and "인용문" in result.abstain_reason
+
+
 def _seed_project(conn, project_id=1, user_id=1, role="viewer"):
     conn.execute(
         "INSERT INTO users (id, username, password_hash, display_name) VALUES (?, 'u', 'x', 'U')",

@@ -583,3 +583,137 @@ def test_simultaneous_company_requests_do_not_share_selection(client, tmp_path):
         tasks = [pool.submit(client.get, "/api/company", headers=h) for h in [ha, hb] * 4]
     assert [f.result().json()["company"]["id"] for f in tasks] == [a["id"], b["id"]] * 4
     assert client.get("/api/company").json()["company"]["name"] == library.DEFAULT_COMPANY_NAME
+# --- 여러 회사: 폴더 이름이 회사를 정하고, 요청 헤더가 현재 회사를 정한다 ---
+
+def _upload(client, name, text, company=None):
+    data = {"export_approved": "true", **({"company": company} if company else {})}
+    return client.post("/api/documents", files={"file": (name, text.encode(), "text/markdown")}, data=data).json()
+
+
+def test_uploading_with_a_folder_name_creates_that_company_and_reports_its_id(client):
+    first = _upload(client, "a.md", "첫 회사의 충분히 긴 본문입니다 1.", company="01_라온공간워크스")
+    second = _upload(client, "b.md", "둘째 회사의 충분히 긴 본문입니다 2.", company="02_해솔에너지랩")
+
+    names = {c["name"]: c["id"] for c in client.get("/api/companies").json()}
+    assert set(names) == {"라온공간워크스", "해솔에너지랩"}  # 번호 접두사는 뗀다
+    assert first["company_id"] == names["라온공간워크스"] and second["company_id"] == names["해솔에너지랩"]
+
+
+def test_uploading_to_an_existing_company_name_reuses_it(client):
+    a = _upload(client, "a.md", "같은 회사의 충분히 긴 본문입니다 1.", company="02_해솔에너지랩")
+    b = _upload(client, "b.md", "같은 회사의 충분히 긴 본문입니다 2.", company="해솔에너지랩")
+
+    assert a["company_id"] == b["company_id"] and len(client.get("/api/companies").json()) == 1
+
+
+def test_company_header_selects_which_company_the_dashboard_shows(client):
+    a = _upload(client, "a.md", "첫 회사의 충분히 긴 본문입니다 1.", company="01_라온공간워크스")
+    b = _upload(client, "b.md", "둘째 회사의 충분히 긴 본문입니다 2.", company="02_해솔에너지랩")
+
+    shown = lambda cid: client.get("/api/company", headers={"X-Company-Id": str(cid)}).json()["company"]["name"]
+
+    assert shown(b["company_id"]) == "해솔에너지랩" and shown(a["company_id"]) == "라온공간워크스"
+    assert client.get("/api/company").json()["company"]["name"] == "라온공간워크스"  # 헤더가 없으면 첫 회사
+
+
+def test_an_unknown_company_header_does_not_expose_the_first_company(client):
+    _upload(client, "a.md", "첫 회사의 충분히 긴 본문입니다 1.", company="01_라온공간워크스")
+
+    response = client.get("/api/company", headers={"X-Company-Id": "99999"})
+    assert response.status_code == 404
+
+
+def test_normalized_folder_name_keeps_existing_legacy_company_and_index(client, monkeypatch):
+    company, headers, uploaded = _folder_upload(client, "01_라온공간워크스")
+    with api._db() as (conn, _):
+        conn.execute("UPDATE projects SET name='01_라온공간워크스' WHERE id=?", (company["id"],))
+        conn.commit()
+        before = [tuple(r) for r in conn.execute("SELECT * FROM assets ORDER BY id")]
+
+    def no_index(*a, **k):
+        raise AssertionError("기존 원문을 다시 색인하면 안 됩니다")
+
+    monkeypatch.setattr(dify, "create_dataset", no_index)
+    monkeypatch.setattr(dify, "add_text_document", no_index)
+    repeated = _upload(client, "a.md", SALES, company="라온공간워크스")
+    assert repeated["company_id"] == company["id"]
+    assert repeated["document_id"] == uploaded["document_id"] and not repeated["is_new"]
+    assert len(client.get("/api/companies").json()) == 1
+    assert client.get("/api/company", headers=headers).json()["company"]["name"] == "01_라온공간워크스"
+    with api._db() as (conn, _):
+        assert [tuple(r) for r in conn.execute("SELECT * FROM assets ORDER BY id")] == before
+
+
+def test_upload_company_name_cannot_override_the_selected_company(client):
+    _, headers, _ = _folder_upload(client, "기업가")
+    before = client.get("/api/companies").json()
+    response = client.post("/api/documents", headers=headers,
+        files={"file": ("a.md", SALES.encode(), "text/markdown")},
+        data={"export_approved": "true", "company": "기업나"})
+    assert response.status_code == 422
+    assert client.get("/api/companies").json() == before
+
+
+def test_sorting_prefix_normalization_does_not_strip_a_numeric_company_name(client):
+    assert client.post("/api/companies", json={"name":"3M테크"}).json()["name"] == "3M테크"
+    assert client.post("/api/companies", json={"name":"01_"}).status_code == 422
+
+
+# --- 일반 질문: 응답에 kind·errored가 있고, 일반 답변은 근거 없이 저장되며, 이어 묻는 질문에 맥락으로 간다 ---
+
+@pytest.fixture
+def general_chat(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    monkeypatch.setattr(api.rag, "GENERAL_CHAT", True)
+    seen = {"general_history": []}
+    monkeypatch.setattr(llm, "classify_question", lambda q, company, history, **k: ("general", llm.Usage(5, 1)))
+
+    def _general(question, history, **kwargs):
+        seen["general_history"].append(history)
+        return llm.GeneralAnswerResult(answer="일반 답변입니다", needs_company_data=False), llm.Usage(5, 5)
+
+    monkeypatch.setattr(llm, "answer_general", _general)
+    monkeypatch.setattr(dify, "retrieve", lambda *a, **k: [])
+    return seen
+
+
+def test_a_general_answer_is_returned_with_its_kind_and_no_evidence(client, general_chat):
+    body = client.post("/api/ask", json={"question": "엑셀 단축키 알려줘"}).json()
+
+    assert body["kind"] == "general" and body["answer"] == "일반 답변입니다"
+    assert body["abstained"] is False and body["errored"] is False and body["evidence"] == []
+
+
+def test_a_general_answer_is_saved_with_its_kind(client, general_chat):
+    body = client.post("/api/ask", json={"question": "엑셀 단축키 알려줘"}).json()
+
+    saved = client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"]
+
+    assert [m["kind"] for m in saved] == ["general", "general"]  # 질문과 답이 짝으로 일반 대화로 남는다
+
+
+def test_a_document_question_still_reports_the_document_kind_and_the_error_flag(client, general_chat):
+    body = client.post("/api/ask", json={"question": "9월 순매출은?"}).json()  # '순매출'은 회사 말이라 문서 경로로 간다
+
+    assert body["kind"] == "document" and body["abstained"] is True and body["errored"] is False
+
+
+def test_follow_ups_hand_only_the_general_turns_to_the_general_answerer(client, general_chat):
+    first = client.post("/api/ask", json={"question": "엑셀 단축키 알려줘"}).json()
+    monkey = general_chat["general_history"]
+
+    client.post("/api/ask", json={"question": "고마워", "conversation_id": first["conversation_id"]})
+
+    assert monkey[0] == [] or monkey[0] is None or monkey[0] == []  # 첫 질문은 맥락이 없다
+    assert [t["content"] for t in monkey[1]] == ["엑셀 단축키 알려줘", "일반 답변입니다"]
+
+
+def test_company_reports_whether_general_chat_is_on_so_the_screen_does_not_overpromise(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    monkeypatch.setattr(api.rag, "GENERAL_CHAT", False)
+    off = client.get("/api/company").json()
+    monkeypatch.setattr(api.rag, "GENERAL_CHAT", True)
+    on = client.get("/api/company").json()
+
+    assert off["general_chat"] is False and on["general_chat"] is True

@@ -6,8 +6,13 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
-from dataclasses import dataclass, replace
+import time
+import unicodedata
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from psm import budget, dify, index_reuse, ingest, llm
@@ -15,9 +20,13 @@ from psm.auth import require_project_access
 from psm.config import (
     ANSWER_CONTEXT_DOCS,
     ANSWER_MODEL,
+    ANSWER_PIPELINE,
     CANDIDATE_CHUNKS,
+    CLASSIFY_MAX_OUTPUT_TOKENS,
     DOC_TYPE_ROUTING,
     FULL_DOCUMENT_CONTEXT,
+    GENERAL_CHAT,
+    GENERAL_MAX_OUTPUT_TOKENS,
     MAX_IMAGES_PER_ANSWER,
     NON_CURRENT_WEIGHT,
     REWRITE_MAX_CHARS,
@@ -25,13 +34,27 @@ from psm.config import (
     ROUTE_MAX_OUTPUT_TOKENS,
     TOP_K,
     TYPE_MISMATCH_WEIGHT,
+    USD_TO_KRW,
     VERIFY_ANSWERS,
     VERIFY_MAX_OUTPUT_TOKENS,
+    WEB_MODEL,
+    WEB_SEARCH_FEE_USD,
+    WEB_SEARCH_INPUT_CHARS_ESTIMATE,
 )
 from psm.logging_config import get_logger, log_timing
 from psm.models import EvidenceItem
 
 logger = get_logger("rag")
+
+
+@contextmanager
+def _stage(timings: dict[str, float], name: str) -> Iterator[None]:
+    """단계가 걸린 시간(초)을 timings에 남긴다. 실패해도 시간은 남는다."""
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[name] = round(time.perf_counter() - start, 3)
 
 
 
@@ -43,6 +66,8 @@ class Answer:
     abstain_reason: str | None = None
     errored: bool = False  # 근거 부족이 아니라 장애(생성 실패 등)로 답하지 못한 경우
     rewritten_query: str | None = None  # 이전 대화가 있을 때 실제로 검색에 쓴 독립 질문
+    kind: str = "document"  # "general"은 문서 근거 없이 일반 지식으로, "web"은 웹 검색으로 답한 것(둘 다 evidence가 없다)
+    timings: dict[str, float] = field(default_factory=dict)  # 단계별 걸린 시간(초). 평가에서 지연이 어디서 나는지 가르는 데 쓴다
 
     @classmethod
     def abstain(cls, reason: str, errored: bool = False) -> Answer:
@@ -273,6 +298,144 @@ def rewrite_query(
     return rewritten.strip()[:REWRITE_MAX_CHARS] or question
 
 
+# --- 일반 질문 ---
+
+_GENERIC_TOKENS = frozenset({"월", "월별", "건", "수", "개", "합계", "전체", "총", "기준", "별", "금액", "수량", "비율", "현황", "내역", "구분", "항목",
+                             "사용", "상황", "의미", "방법", "확인", "결과", "변경", "내용", "관련", "경우", "정도", "이상", "이하", "기간", "종류", "허가", "보호", "작업", "구역"})  # 너무 흔해서 회사 신호가 못 된다
+_COMPANY_WORDS = re.compile(r"우리\s*(?:회사|사업|팀|부서|프로젝트|고객|거래처|매출|예산|재고|일정)|저희|당사|사내|이번\s*달|지난\s*달|지난달")
+_WORD = re.compile(r"[0-9A-Za-z가-힣]+")
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFC", text)).casefold()
+
+
+_TITLE_GENERIC_TOKENS = frozenset({"사업계획", "실행사업계획", "개선", "구축", "도입", "운영", "관리", "점검", "교체", "설치", "계획", "보고", "복구", "분리", "전환", "확대", "재배치"})
+_HINT_NAMES = 15  # 분류기에 보여 줄 고객사·사업 이름 수
+
+
+def _tokens(text: str, generic: frozenset[str]) -> list[str]:
+    return [t for t in _WORD.findall(unicodedata.normalize("NFC", text)) if len(t) >= 2 and not t.isdigit() and t not in generic]
+
+
+def _vocabulary_parts(conn: sqlite3.Connection, project_id: int) -> tuple[frozenset[str], frozenset[str], list[str]]:
+    """(강한 말, 약한 말, 고객사 이름). 강한 말은 회사·고객사 이름이라 어디서든 문서 질문으로 본다.
+    약한 말은 지표·표·문서 이름의 낱말('온도', '재고')이라 일상 대화에도 나올 수 있다."""
+    generic = _GENERIC_TOKENS
+    names = [r[0] for r in conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,))]
+    labels = [r[0] for r in conn.execute("SELECT DISTINCT label FROM business_metrics WHERE project_id = ? AND label IS NOT NULL", (project_id,))]
+    labels += [r[0] for r in conn.execute("SELECT DISTINCT name FROM kpi_breakdowns WHERE project_id = ?", (project_id,))]
+    labels += [re.sub(r"\.\w+$", "", r[0]) for r in conn.execute("SELECT filename FROM documents WHERE project_id = ?", (project_id,))]
+    strong = {_squash(n) for n in names}  # 회사 이름은 통째로도
+    strong.update(_squash(t) for name in names for t in _tokens(name, generic))
+    weak = {_squash(t) for text in labels for t in _tokens(text, generic)}
+    customers: list[str] = []
+    for (text,) in conn.execute(
+        "SELECT substr(description_text, 1, 2500) FROM assets WHERE project_id = ? AND status = 'indexed' AND description_text IS NOT NULL "
+        "AND COALESCE(page_number, 1) = 1 ORDER BY document_id", (project_id,)
+    ):
+        title = ingest.first_heading(text)
+        if not title:
+            continue
+        words = _tokens(title, _TITLE_GENERIC_TOKENS)
+        is_plan = ingest.header_value(text, "doc_type") == "사업계획"
+        for word in (words if is_plan else words[:1]):  # 사업계획은 제목 전체, 다른 문서는 첫 낱말만(나머지는 일반 말과 겹치기 쉽다)
+            if word not in generic:
+                strong.add(_squash(word))
+        if words and words[0] not in customers and is_plan:
+            customers.append(words[0])
+    return frozenset(strong), frozenset(weak - strong), customers[:_HINT_NAMES]
+
+
+def company_vocabulary(conn: sqlite3.Connection, project_id: int) -> tuple[frozenset[str], list[str]]:
+    """이 회사 질문에 나올 말과, 분류기에 보여 줄 고객사·사업 이름.
+
+    말: 회사 이름, 지표·표 이름의 낱말, 문서 이름의 낱말, 문서 제목의 첫 낱말(보통 고객사 이름), 사업계획 제목의 모든 낱말.
+    한 글자와 너무 흔한 낱말은 뺀다. 문서 안에만 나오는 고객사 이름도 잡으려고 제목을 본다(분류기는 그 이름을 모른다).
+    """
+    strong, weak, customers = _vocabulary_parts(conn, project_id)
+    return strong | weak, customers
+
+
+def company_terms(conn: sqlite3.Connection, project_id: int) -> frozenset[str]:
+    return company_vocabulary(conn, project_id)[0]
+
+
+def has_company_signal(conn: sqlite3.Connection, project_id: int, question: str, *, strong_only: bool = False) -> bool:
+    """질문에 이 회사 말(이름·지표·문서 이름·'우리 회사' 같은 표현)이 들어 있나. 있으면 분류기를 거치지 않고 문서 질문으로 본다.
+
+    strong_only면 지표·표·문서 이름의 낱말은 신호로 치지 않는다 — 일반·웹 대화를 잇는 후속 질문("온도에 맞는 옷은?")이
+    '납품 온도 기준' 같은 지표의 낱말 때문에 문서 질문이 되는 것을 막는다. 회사·고객사 이름과 '우리 회사' 표현은 여전히 신호다.
+    """
+    if _COMPANY_WORDS.search(unicodedata.normalize("NFC", question)):
+        return True
+    squashed = _squash(question)
+    strong, weak, _customers = _vocabulary_parts(conn, project_id)
+    return any(term in squashed for term in (strong if strong_only else strong | weak))
+
+
+def _reserved_call(
+    conn: sqlite3.Connection, project_id: int, estimated: float, call, failure_message: str, extra_krw: float = 0.0, model: str = ANSWER_MODEL
+):
+    """비용을 예약하고 호출한다. 실패하면 예약을 취소하고 None을 돌려준다(예산 초과는 reserve가 그대로 던진다). extra_krw는 토큰 밖의 고정 요금(웹 검색)."""
+    reservation_id = budget.reserve(conn, "answer", estimated + extra_krw, project_id=project_id)
+    try:
+        result, usage = call()
+    except Exception:
+        budget.cancel(conn, reservation_id)
+        logger.exception("project=%s %s", project_id, failure_message)
+        return None
+    budget.settle(conn, reservation_id, llm.actual_cost_krw(model, usage.prompt_tokens, usage.completion_tokens) + extra_krw)
+    return result
+
+
+def _general_answer(
+    conn: sqlite3.Connection, project_id: int, question: str, history: list[dict] | None, search_query: str | None = None,
+    timings: dict[str, float] | None = None,
+) -> Answer | None:
+    """문서 없이 답할 수 있는 일반 질문이면 일반 답변, 아니면 None(문서 경로로). 어디서든 실패하면 None — 지어낸 답이 나가지 않게 한다.
+
+    question은 사용자가 쓴 원래 문장이다. 검색용 재작성은 "고마워"를 "고마워라는 표현의 의미는?"으로 바꿔 대화의 뜻을 깨므로 분류·답변에는 쓰지 않는다.
+    대신 안전 검사(회사 신호)는 원래 문장과 재작성 둘 다 본다 — 재작성이 "그럼 4월은?"을 "한결식자재유통의 4월 순매출은?"으로 풀어 주면 문서 질문이다.
+    """
+    timings = {} if timings is None else timings
+    turns = history or []
+    continuing = bool(turns) and turns[-1].get("kind") in ("general", "web")  # 일반·웹 대화를 잇는 후속 질문
+    if has_company_signal(conn, project_id, question, strong_only=continuing) or (
+            search_query and has_company_signal(conn, project_id, search_query, strong_only=continuing)):
+        return None
+    company = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()["name"]
+    hint_names = company_vocabulary(conn, project_id)[1]
+    with _stage(timings, "classify"):
+        kind = _reserved_call(
+            conn, project_id,
+            llm.estimate_cost_krw(ANSWER_MODEL, input_chars=len(question) + len(company) + sum(len(t["content"]) for t in turns) + 400,
+                                  expected_output_tokens=CLASSIFY_MAX_OUTPUT_TOKENS),
+            lambda: llm.classify_question(question, company, turns, terms=hint_names), "질문 분류 실패 — 문서 질문으로 처리")
+    if kind not in ("general", "web"):
+        return None
+    general_turns = [t for t in turns if t.get("kind") in ("general", "web")]  # 회사 문서에서 나온 값이 일반·웹 답변으로 새지 않게 한다
+    if kind == "web":
+        with _stage(timings, "web"):
+            text = _reserved_call(
+                conn, project_id,
+                llm.estimate_cost_krw(WEB_MODEL, input_chars=len(question) + sum(len(t["content"]) for t in general_turns) + WEB_SEARCH_INPUT_CHARS_ESTIMATE,
+                                      expected_output_tokens=GENERAL_MAX_OUTPUT_TOKENS),
+                lambda: llm.answer_web(question, general_turns), "웹 검색 답변 생성 실패 — 일반 답변으로 처리",
+                extra_krw=round(WEB_SEARCH_FEE_USD * USD_TO_KRW, 2), model=WEB_MODEL)
+        if text:
+            return Answer(text=text, evidence=[], abstained=False, kind="web", timings=timings)  # 검색이 실패해도 문서 경로로 새지 않고 아래 일반 답변으로 간다
+    with _stage(timings, "answer"):
+        result = _reserved_call(
+            conn, project_id,
+            llm.estimate_cost_krw(ANSWER_MODEL, input_chars=len(question) + sum(len(t["content"]) for t in general_turns) + 400,
+                                  expected_output_tokens=GENERAL_MAX_OUTPUT_TOKENS),
+            lambda: llm.answer_general(question, general_turns), "일반 답변 생성 실패 — 문서 질문으로 처리")
+    if result is None or result.needs_company_data or not result.answer.strip():
+        return None
+    return Answer(text=result.answer.strip(), evidence=[], abstained=False, kind="general", timings=timings)
+
+
 @log_timing(logger, "answer_question")
 def answer_question(
     conn: sqlite3.Connection,
@@ -287,9 +450,23 @@ def answer_question(
     # 클라이언트가 보낸 project_id·역할을 그대로 신뢰하지 않는다 — 서버가 매번 재확인한다(§6).
     require_project_access(conn, user_id, project_id, action="read")
 
-    search_query = rewrite_query(conn, project_id, question, history) if history else None
-    answer = _answer(conn, user_id, project_id, dataset_id, question, document_ids, history, search_query=search_query)
-    return replace(answer, rewritten_query=search_query)
+    if ANSWER_PIPELINE == "planner" and GENERAL_CHAT and not document_ids:  # 계획 호출 하나가 재작성·분류를 대신한다
+        # 순환 import를 피하려고 여기서 불러온다(answering이 이 모듈을 쓴다)
+        from psm.answering import answer as answer_with_planner
+
+        return answer_with_planner(conn, user_id, project_id, dataset_id, question, history)
+    timings: dict[str, float] = {}
+    if history:
+        with _stage(timings, "rewrite"):
+            search_query = rewrite_query(conn, project_id, question, history)
+    else:
+        search_query = None
+    if GENERAL_CHAT and not document_ids:  # 문서를 골랐으면 문서 질문이다
+        general = _general_answer(conn, project_id, question, history, search_query, timings)
+        if general is not None:
+            return replace(general, rewritten_query=search_query)
+    answer = _answer(conn, user_id, project_id, dataset_id, question, document_ids, history, timings, search_query=search_query)
+    return replace(answer, rewritten_query=search_query, timings=timings)
 
 
 def _answer(
@@ -300,11 +477,13 @@ def _answer(
     question: str,
     document_ids: list[int] | None,
     history: list[dict] | None,
+    timings: dict[str, float] | None = None,
     *,
     search_query: str | None = None,
 ) -> Answer:
-    # 검색용 재작성으로 항목이 바뀌어도 답변 점검은 사용자의 원래 질문과 대화 맥락을 기준으로 한다.
-    evidence = retrieve_evidence(conn, project_id, dataset_id, search_query or question, document_ids, limit=ANSWER_CONTEXT_DOCS)
+    timings = {} if timings is None else timings
+    with _stage(timings, "retrieve"):
+        evidence = retrieve_evidence(conn, project_id, dataset_id, search_query or question, document_ids, limit=ANSWER_CONTEXT_DOCS)
     if not evidence:
         logger.warning("project=%s 답변 유보: 근거 없음", project_id)
         return Answer.abstain("허용된 사업 자료에서 근거를 찾지 못했습니다")
@@ -319,9 +498,10 @@ def _answer(
     )
     reservation_id = budget.reserve(conn, "answer", estimated, project_id=project_id)
     try:
-        result, usage = llm.answer(
-            question, model_evidence, images, _official_values(conn, project_id), history=history
-        )
+        with _stage(timings, "answer"):
+            result, usage = llm.answer(
+                question, model_evidence, images, _official_values(conn, project_id), history=history
+            )
     except Exception:
         budget.cancel(conn, reservation_id)
         logger.exception("project=%s 답변 생성 실패", project_id)

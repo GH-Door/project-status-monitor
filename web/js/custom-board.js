@@ -5,7 +5,7 @@ import { el } from "./dom.js";
 import { compact, fmtValue } from "./format.js";
 import { miniGauge } from "./widgets.js";
 
-const sub = (spec) => [spec.period, spec.document?.replace(/\.md$/, "")].filter(Boolean).join(" · ");
+const sub = (spec) => [spec.period ?? "기간 없음", spec.document?.replace(/\.md$/, "")].filter(Boolean).join(" · ");  // 기간 없는 값은 기준일과 상관없이 항상 보인다 — 그렇다고 알려 준다
 
 // 값 하나는 막대 하나짜리 차트가 아니라 큰 숫자로 보여 준다. 정확한 값은 마우스를 올리면(title) 보인다.
 function tileCard(spec) {

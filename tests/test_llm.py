@@ -452,3 +452,69 @@ def test_nested_item_schema_is_compatible_with_strict_structured_output():
     for obj in [schema, *schema["$defs"].values()]:
         assert obj["additionalProperties"] is False
         assert set(obj["required"]) == set(obj["properties"])
+
+
+# --- 실험 G3: 둔갑 패턴 예시를 시스템 프롬프트에 붙인다 (FEW_SHOT) ---
+
+def test_few_shot_is_off_by_default_and_leaves_the_prompt_unchanged(monkeypatch):
+    client = _plain_client(monkeypatch)
+    monkeypatch.setattr(llm, "ITEM_CHECK", False)
+    monkeypatch.setattr(llm, "FEW_SHOT", False)
+
+    llm.answer("질문", [], [], {})
+
+    assert client.kwargs["messages"][0]["content"] == llm.ANSWER_SYSTEM_PROMPT + llm._PLAIN_ANSWER_RULES
+
+
+def test_few_shot_adds_examples_after_the_base_rules_and_keeps_the_plain_schema(monkeypatch):
+    client = _plain_client(monkeypatch)
+    monkeypatch.setattr(llm, "ITEM_CHECK", False)
+    monkeypatch.setattr(llm, "FEW_SHOT", True)
+
+    llm.answer("질문", [], [], {})
+
+    system = client.kwargs["messages"][0]["content"]
+    assert system.startswith(llm.ANSWER_SYSTEM_PROMPT) and system != llm.ANSWER_SYSTEM_PROMPT
+    assert client.kwargs["response_format"] is llm.AnswerResult
+    assert "유보" in system and "답해야" in system  # 유보 예시와 과다 유보를 막는 반대 예시가 함께 있다
+
+
+def test_few_shot_examples_do_not_reuse_evaluation_question_names():
+    import json
+    from pathlib import Path
+
+    path = Path("eval/questions/questions.json")
+    if not path.exists():  # eval/은 .gitignore 대상이라 clone에는 없다
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    questions = data if isinstance(data, list) else data["questions"]
+    company_words = {w for q in questions if len(w := q["question"].split()[0]) >= 2}  # 한 글자("그")는 이름이 아니라 우연히 겹친다
+    assert not any(word in llm._FEW_SHOT_RULES for word in company_words)
+
+
+def test_kpi_prompt_keeps_the_month_out_of_a_repeating_metric_name():
+    assert "월" in llm._KPI_SYSTEM and "이름에 기간을 넣지" in llm._KPI_SYSTEM  # 같은 지표가 달마다 이어지려면 이름이 같아야 한다
+
+
+# --- 말투: 문서 답변은 존댓말, 결론을 첫 문장에 ---
+
+def test_the_answer_prompt_asks_for_polite_speech_and_the_conclusion_first():
+    prompt = llm.ANSWER_SYSTEM_PROMPT
+
+    assert "존댓말" in prompt and "'~이다'" in prompt  # 반말(평서체)을 쓰지 말라고 예를 들어 알려 준다
+    assert "첫 문장에 결론" in prompt  # 두괄식
+
+
+def test_the_reason_for_not_answering_is_also_polite():
+    assert "abstain_reason도 존댓말" in llm.ANSWER_SYSTEM_PROMPT
+
+
+def test_general_answers_are_polite_too():
+    assert "존댓말" in llm._GENERAL_SYSTEM
+
+
+def test_the_answer_prompt_keeps_dates_times_and_ranges_in_the_documents_notation():
+    prompt = llm.ANSWER_SYSTEM_PROMPT
+
+    # 존댓말로 쓰더라도 날짜·시각·범위를 '18시'·'05:30부터 07:30까지'처럼 풀어 쓰지 않는다 — 사용자가 문서와 바로 대조할 수 있게
+    assert "표기 그대로" in prompt and "2026-09-25 18:00" in prompt and "05:30~07:30" in prompt

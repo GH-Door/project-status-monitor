@@ -7,6 +7,7 @@
 import json
 import re
 import sqlite3
+from datetime import date
 
 from psm import overview
 
@@ -187,9 +188,9 @@ def _metric_widget(rows: list[dict], widget: dict) -> dict:
     return {"form": widget["form"], "group": group}
 
 
-def _breakdown_widget(conn: sqlite3.Connection, project_id: int, scope: str, widget: dict) -> dict:
+def _breakdown_widget(conn: sqlite3.Connection, project_id: int, scope: str, widget: dict, as_of: date | None) -> dict:
     ref = widget["refs"][0]
-    found = next((b for b in overview._latest_breakdowns(conn, project_id, scope or None)
+    found = next((b for b in overview._latest_breakdowns(conn, project_id, scope or None, as_of)
                   if b["name"] == ref["name"] and b["unit"] == ref["unit"]), None)
     if found is None:
         return _missing(widget)
@@ -197,36 +198,36 @@ def _breakdown_widget(conn: sqlite3.Connection, project_id: int, scope: str, wid
     return {"form": widget["form"], "group": {**group, "kind": "share" if widget["form"] == "share" else "bars"}}
 
 
-def _compare_metric_widget(conn: sqlite3.Connection, project_id: int, widget: dict) -> dict:
-    entries = overview._compare_metric_entries(conn, project_id)
+def _compare_metric_widget(conn: sqlite3.Connection, project_id: int, widget: dict, as_of: date | None) -> dict:
+    entries = overview._compare_metric_entries(conn, project_id, as_of)
     chosen = [entries.get((_norm(ref["name"]), ref["unit"])) for ref in widget["refs"]]
     if any(e is None for e in chosen):
         return _missing(widget)
-    return {"form": widget["form"], "group": overview._compare_metric_chart(chosen)}
+    return {"form": widget["form"], "group": overview.label_scopes(conn, project_id, overview._compare_metric_chart(chosen))}
 
 
-def _compare_breakdown_widget(conn: sqlite3.Connection, project_id: int, widget: dict) -> dict:
+def _compare_breakdown_widget(conn: sqlite3.Connection, project_id: int, widget: dict, as_of: date | None) -> dict:
     ref = widget["refs"][0]
-    items = [b for b in overview._latest_breakdowns(conn, project_id) if b["scope"] and b["name"] == ref["name"] and b["unit"] == ref["unit"]]
+    items = [b for b in overview._latest_breakdowns(conn, project_id, as_of=as_of) if b["scope"] and b["name"] == ref["name"] and b["unit"] == ref["unit"]]
     charts = overview._compare_breakdown_charts(ref["name"], ref["unit"], items) if items else []
     wanted = [c for c in charts if (c["kind"] == "share") == (widget["form"] == "share")]
-    return {"form": widget["form"], "group": wanted[0]} if wanted else _missing(widget)
+    return {"form": widget["form"], "group": overview.label_scopes(conn, project_id, wanted[0])} if wanted else _missing(widget)
 
 
-def _widget_view(conn: sqlite3.Connection, project_id: int, scope: str, widget: dict) -> dict:
+def _widget_view(conn: sqlite3.Connection, project_id: int, scope: str, widget: dict, as_of: date | None) -> dict:
     kind = widget["refs"][0]["kind"]
     if kind == "metric":
-        return _metric_widget(overview._published_rows(conn, project_id, scope or None), widget)
+        return _metric_widget(overview._published_rows(conn, project_id, scope or None, as_of), widget)
     if kind == "breakdown":
-        return _breakdown_widget(conn, project_id, scope, widget)
+        return _breakdown_widget(conn, project_id, scope, widget, as_of)
     if kind == "compare_metric":
-        return _compare_metric_widget(conn, project_id, widget)
-    return _compare_breakdown_widget(conn, project_id, widget)
+        return _compare_metric_widget(conn, project_id, widget, as_of)
+    return _compare_breakdown_widget(conn, project_id, widget, as_of)
 
 
-def layout_view(conn: sqlite3.Connection, project_id: int, scope: str) -> dict:
+def layout_view(conn: sqlite3.Connection, project_id: int, scope: str, as_of: date | None = None) -> dict:
     """화면이 그릴 위젯들. 고른 적이 없으면 {"custom": False} — 화면이 자동 기본값을 쓴다."""
     widgets = load_layout(conn, project_id, scope)
     if widgets is None:
         return {"custom": False, "widgets": []}
-    return {"custom": True, "widgets": [_widget_view(conn, project_id, scope, w) for w in widgets]}
+    return {"custom": True, "widgets": [_widget_view(conn, project_id, scope, w, as_of) for w in widgets]}

@@ -96,3 +96,19 @@ def test_scope_column_is_added_to_metrics_and_breakdowns():
     init_db(conn)
 
     assert "scope" in _columns(conn, "business_metrics") and "scope" in _columns(conn, "kpi_breakdowns")
+
+
+def test_old_messages_table_gains_the_kind_column_and_keeps_its_rows():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id INTEGER NOT NULL, role TEXT NOT NULL, "
+        "content TEXT NOT NULL, rewritten_query TEXT, evidence_json TEXT NOT NULL DEFAULT '[]', abstained INTEGER NOT NULL DEFAULT 0, "
+        "abstain_reason TEXT, created_at TEXT NOT NULL DEFAULT 'x');"
+        "INSERT INTO messages (conversation_id, role, content) VALUES (1, 'user', '옛 질문');"
+    )
+
+    init_db(conn)
+
+    assert "kind" in _columns(conn, "messages")
+    assert conn.execute("SELECT kind FROM messages").fetchone()["kind"] == "document"  # 옛 대화는 문서 대화로 남는다

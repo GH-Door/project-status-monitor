@@ -11,7 +11,7 @@ const EXAMPLES = [
 ];
 
 function uploadDialog(onDone) {
-  const file = el("input", { type: "file", accept: ".md,.txt,.pdf,.png,.jpg,.jpeg,.webp", "aria-label": "파일" });
+  const file = el("input", { type: "file", accept: ".md,.txt,.csv,.pdf,.png,.jpg,.jpeg,.webp", "aria-label": "파일" });
   const approved = el("input", { type: "checkbox", id: "exp" });
   const submit = el("button", { type: "button", class: "btn primary" }, "올리고 질문에 쓰기");
   submit.addEventListener("click", async () => {
@@ -28,7 +28,7 @@ function uploadDialog(onDone) {
     } catch (error) { toast(error.message, true); submit.disabled = false; submit.textContent = "올리고 질문에 쓰기"; }
   });
   openDialog(el("div", { class: "stack" }, el("h2", {}, "파일 올리기"),
-    el("p", { class: "muted small" }, "회사 문서에 추가돼요. md, txt는 바로 색인되고, PDF·이미지는 판독 비용이 들어요(예산에서 차감)."),
+    el("p", { class: "muted small" }, "회사 문서에 추가돼요. md, txt, csv, PDF, 이미지를 올릴 수 있어요. 새로운 자료의 색인·지표 추출·이미지 판독에는 API 비용이 발생할 수 있어요."),
     file, el("label", { class: "row", for: "exp" }, approved, "이 자료를 외부 API(OpenAI)로 보내도 돼요 (반출 승인)"),
     el("div", { class: "row", style: "justify-content:flex-end" }, el("button", { type: "button", class: "btn", onclick: closeDialog }, "취소"), submit)));
 }
@@ -51,10 +51,10 @@ export async function render() {
   }
 
   const thread = el("div", { class: "thread", "aria-live": "polite", "aria-label": "대화" },
-    saved ? restoredMessages(saved.messages) : emptyThread());
+    saved ? restoredMessages(saved.messages) : emptyThread(company.general_chat));
   const listPane = el("nav", { class: "convo-list", "aria-label": "대화 목록" });
   const docsPane = el("div", { class: "panel docs-pane" });
-  const question = el("textarea", { rows: 2, placeholder: "선택한 문서 안에서만 답해요. 근거가 없으면 답변을 유보해요.", "aria-label": "질문" });
+  const question = el("textarea", { rows: 2, placeholder: company.general_chat ? "문서에 대해 물어보세요. 문서와 상관없는 질문은 일반 답변이나 웹 검색으로 도와드려요." : "선택한 문서 안에서만 답해요. 근거를 찾지 못하면 그렇다고 알려드려요.", "aria-label": "질문" });
   const send = el("button", { type: "button", class: "btn primary" }, "질문하기");
 
   async function drawConversations() {

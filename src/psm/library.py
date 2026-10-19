@@ -29,7 +29,8 @@ DEFAULT_COMPANY_NAME = "우리 회사"
 # HTTP 요청별 선택. 다른 탭/요청의 선택이 서버 전역 상태를 바꾸지 않는다.
 active_company_id: ContextVar[int | None] = ContextVar("active_company_id", default=None)
 _EXCLUDED_NAME = re.compile(r"정답|answer|gold", re.IGNORECASE)
-_TEXT_MIME = {".md": "text/markdown", ".txt": "text/plain"}
+_TEXT_MIME = {".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv"}
+_RULE_MIME = frozenset({"text/markdown", "text/plain"})  # 핵심 지표·일정을 규칙으로 뽑는 형식(표로 바꾼 csv는 아니다)
 _OTHER_MIME = {  # 웹 업로드 전용. 폴더 동기화는 텍스트 문서만 다룬다(PDF·이미지는 판독 비용이 든다)
     ".pdf": "application/pdf",
     ".png": "image/png",
@@ -76,7 +77,10 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-# --- 회사(= 이 도구가 다루는 단 하나의 사업) ---
+# --- 회사 선택과 폴더 등록 ---
+
+
+_FOLDER_NUMBER_PREFIX = re.compile(r"^\d+[\s._-]+")
 
 
 def company_project(conn: sqlite3.Connection) -> sqlite3.Row | None:
@@ -86,17 +90,43 @@ def company_project(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM projects ORDER BY id LIMIT 1").fetchone()
 
 
+def folder_company_name(folder: str | None) -> str | None:
+    """폴더 이름 → 회사 이름. 정렬용 번호 접두사는 뗀다(`02_해솔에너지랩` → `해솔에너지랩`). 비면 None."""
+    name = _FOLDER_NUMBER_PREFIX.sub("", _nfc(folder or "").strip()).strip()
+    return name or None
+
+
+def validate_folder_name(name: str) -> str:
+    name = _nfc(name.strip())
+    if not name or len(name) > 80 or any(c in name for c in ("/", "\\", "\x00")) or name in (".", "..") or not folder_company_name(name):
+        raise ValueError("기업 폴더 이름이 올바르지 않습니다")
+    return name
+
+
+def _folder_project_id(conn: sqlite3.Connection, name: str) -> int | None:
+    # 기존 폴더 연결을 우선해 01_기업명 -> 기업명 정규화로 중복 회사가 생기지 않게 한다.
+    row = conn.execute("SELECT project_id FROM company_folders WHERE name = ?", (name,)).fetchone()
+    if row:
+        return row["project_id"]
+    rows = conn.execute("SELECT id, name FROM projects ORDER BY id").fetchall()
+    exact = [r["id"] for r in rows if _nfc(r["name"]) == name]
+    matches = exact or [r["id"] for r in rows if folder_company_name(r["name"]) == folder_company_name(name)]
+    if len(matches) > 1:
+        raise ValueError("같은 이름의 기업이 여러 개입니다. 기업을 선택한 뒤 폴더명 없이 업로드해 주세요")
+    return matches[0] if matches else None
+
+
 def folder_company(conn: sqlite3.Connection, owner_id: int, name: str) -> int:
     """폴더 이름별 회사를 재사용한다. 기존 회사/문서의 소속은 바꾸지 않는다."""
-    name = _nfc(name.strip())
+    name = validate_folder_name(name)
     with conn:
         # 동시 등록도 같은 폴더에 회사가 중복 생성되지 않게 직렬화한다.
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute("SELECT project_id FROM company_folders WHERE name = ?", (name,)).fetchone()
-        if row:
-            require_project_access(conn, owner_id, row["project_id"], "approve")
-            return row["project_id"]
-        company_id = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,)).lastrowid
+        existing = _folder_project_id(conn, name)
+        if existing is not None:
+            require_project_access(conn, owner_id, existing, "approve")
+            return existing
+        company_id = conn.execute("INSERT INTO projects (name) VALUES (?)", (folder_company_name(name),)).lastrowid
         conn.execute(
             "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, 'owner')",
             (company_id, owner_id),
@@ -115,21 +145,36 @@ def default_company_name(root: Path) -> str:
     return DEFAULT_COMPANY_NAME
 
 
-def ensure_company(conn: sqlite3.Connection, owner_id: int, root: Path = RAG_DOCS_DIR) -> tuple[int, str, bool]:
-    """(project_id, Dify dataset_id, 새로 만들었는지). 지식베이스가 없으면 만든다."""
-    row = company_project(conn)
-    if row is None and active_company_id.get() is not None:
-        raise ValueError("선택한 기업을 찾을 수 없습니다")
-    created = row is None
-    if created:
-        name = default_company_name(root)
+def ensure_company(
+    conn: sqlite3.Connection, owner_id: int, root: Path = RAG_DOCS_DIR, name: str | None = None
+) -> tuple[int, str, bool]:
+    """(project_id, Dify dataset_id, 새로 만들었는지). 지식베이스가 없으면 만든다.
+
+    name이 있으면(폴더 이름에서 온 회사 이름) 같은 이름의 회사를 쓰고 없으면 새로 만든다. 없으면 화면이 고른 회사.
+    """
+    selected = active_company_id.get()
+    if name is not None:
+        name = validate_folder_name(name)
+        existing = _folder_project_id(conn, name)
+        if selected is not None and existing != selected:
+            raise ValueError("선택한 기업과 업로드 폴더의 기업이 다릅니다")
+        project_id = folder_company(conn, owner_id, name)
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        created = existing is None
+    else:
+        row = company_project(conn)
+        if row is None and selected is not None:
+            raise ValueError("선택한 기업을 찾을 수 없습니다")
+        created = row is None
+    if row is None:
+        name = name or default_company_name(root)
         project_id = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,)).lastrowid
         conn.execute(
             "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, 'owner')",
             (project_id, owner_id),
         )
         conn.commit()
-        row = company_project(conn)
+        row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()  # 방금 만든 회사(첫 회사가 아니다)
     require_project_access(conn, owner_id, row["id"], "approve")
     dataset_id = row["dify_dataset_id"]
     if not dataset_id:
@@ -166,6 +211,19 @@ def _has_indexed_asset(conn: sqlite3.Connection, document_id: int) -> bool:
     )
 
 
+def document_text(path: Path) -> str | None:
+    """지표 추출에 쓸 글. md·txt는 원문, csv는 마크다운 표, 글자가 있는 pdf는 페이지 글. 이미지·스캔 pdf는 None."""
+    suffix = path.suffix.lower()
+    if suffix in (".md", ".txt"):
+        return path.read_text(encoding="utf-8")
+    if suffix == ".csv":
+        return ingest.csv_to_markdown(ingest.read_text_file(path)) or None
+    if suffix == ".pdf":
+        text = ingest.pdf_text(path)
+        return text if len(text) >= ingest.MIN_EXTRACTABLE_TEXT_CHARS else None
+    return None
+
+
 def guess_mime(path: Path) -> str | None:
     """등록 가능한 형식이면 MIME, 아니면 None."""
     return _TEXT_MIME.get(path.suffix.lower()) or _OTHER_MIME.get(path.suffix.lower())
@@ -175,7 +233,7 @@ def _save_rule_metrics(
     conn: sqlite3.Connection, project_id: int, document_id: int, path: Path, mime_type: str
 ) -> None:
     """md/txt의 핵심 지표·일정 후보를 규칙으로 저장한다. 같은 (문서, 지표)는 건드리지 않으므로 여러 번 불러도 된다."""
-    if mime_type not in _TEXT_MIME.values():
+    if mime_type not in _RULE_MIME:
         return
     text = path.read_text(encoding="utf-8")
     metrics.save_candidates(conn, project_id, document_id, text)
@@ -219,8 +277,6 @@ def extract_kpis_once(
     conn: sqlite3.Connection, project_id: int, document_id: int, path: Path
 ) -> kpi.ExtractResult | None:
     """문서의 회사별 지표(LLM)를 아직 안 뽑았으면 뽑는다. 성공해야 '뽑음'으로 표시해 다음 동기화에서 다시 시도한다."""
-    if path.suffix.lower() not in _TEXT_MIME:
-        return None
     done = conn.execute(
         "SELECT kpi_extracted_at, export_approved, filename FROM documents WHERE id = ?", (document_id,)
     ).fetchone()
@@ -228,7 +284,9 @@ def extract_kpis_once(
         return None  # 반출 승인이 없는 문서는 외부 AI로 보내지 않는다
     if _UNAPPROVED_MARK in _nfc(done["filename"]):
         return None  # 미승인 문서는 검색에는 쓰여도 공식 지표를 만들지 않는다
-    text = path.read_text(encoding="utf-8")
+    text = document_text(path)
+    if text is None:
+        return None  # 이미지·스캔 pdf처럼 글이 없으면 지표를 뽑지 않는다(검색용 판독은 색인 때 이미 했다)
     status = ingest.header_status(text)
     if status and status != ingest.CURRENT_STATUS:
         return None  # 과거판·초안·승인 대기 문서의 값이 회사 공식 지표로 올라오지 않게 한다

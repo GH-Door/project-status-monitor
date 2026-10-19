@@ -76,7 +76,7 @@ def test_history_keeps_only_recent_turns_and_clips_total_chars(seeded):
     turns = conversations.history(seeded, conv_id)
 
     assert len(turns) == HISTORY_MAX_TURNS * 2
-    assert turns[0] == {"role": "user", "content": "q3"} and turns[-1]["content"] == f"a{HISTORY_MAX_TURNS + 2}"
+    assert turns[0] == {"role": "user", "content": "q3", "kind": "document"} and turns[-1]["content"] == f"a{HISTORY_MAX_TURNS + 2}"
 
     long_conv = conversations.create(seeded, 1, 1, "긴 대화")
     _turn(seeded, long_conv, "질" * HISTORY_MAX_CHARS, "답" * HISTORY_MAX_CHARS)
@@ -88,3 +88,28 @@ def test_abstained_answer_is_marked_in_history(seeded):
     _turn(seeded, conv_id, "질문", "", abstained=True, abstain_reason="근거 없음")
 
     assert "유보" in conversations.history(seeded, conv_id)[1]["content"]
+
+
+# --- 일반 답변 표시(kind): 다시 열어도 '일반 답변' 배지가 남고, 답변 맥락에는 종류가 함께 간다 ---
+
+def test_a_general_answer_keeps_its_kind_when_the_conversation_is_reopened(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "엑셀 질문")
+    conversations.add_message(seeded, conv_id, "user", "VLOOKUP은?", kind="general")
+    conversations.add_message(seeded, conv_id, "assistant", "이렇게 씁니다", kind="general")
+    conversations.add_message(seeded, conv_id, "user", "2월 순매출은?")
+
+    messages = conversations.get(seeded, conv_id, 1, 1)["messages"]
+
+    assert [m["kind"] for m in messages] == ["general", "general", "document"]  # 종류를 안 주면 document
+
+
+def test_history_for_the_model_carries_each_turn_kind(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "섞인 대화")
+    conversations.add_message(seeded, conv_id, "user", "2월 순매출은?")
+    conversations.add_message(seeded, conv_id, "assistant", "158,240,000원", evidence=[{"asset_id": 1}])
+    conversations.add_message(seeded, conv_id, "user", "엑셀 단축키는?", kind="general")
+    conversations.add_message(seeded, conv_id, "assistant", "Ctrl+C", kind="general")
+
+    turns = conversations.history(seeded, conv_id)
+
+    assert [t["kind"] for t in turns] == ["document", "document", "general", "general"]

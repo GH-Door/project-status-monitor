@@ -47,12 +47,13 @@ def add_message(
     evidence: list[dict] | None = None,
     abstained: bool = False,
     abstain_reason: str | None = None,
+    kind: str = "document",
 ) -> None:
     conn.execute(
         "INSERT INTO messages (conversation_id, role, content, rewritten_query, evidence_json, "
-        "abstained, abstain_reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "abstained, abstain_reason, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (conversation_id, role, content, rewritten_query,
-         json.dumps(evidence or [], ensure_ascii=False), int(abstained), abstain_reason),
+         json.dumps(evidence or [], ensure_ascii=False), int(abstained), abstain_reason, kind),
     )
     conn.execute(
         "UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
@@ -71,6 +72,7 @@ def get(conn: sqlite3.Connection, conversation_id: int, user_id: int, project_id
             "evidence": json.loads(m["evidence_json"]),
             "abstained": bool(m["abstained"]),
             "abstain_reason": m["abstain_reason"],
+            "kind": m["kind"],
         }
         for m in conn.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conversation_id,))
     ]
@@ -99,7 +101,7 @@ def history(conn: sqlite3.Connection, conversation_id: int) -> list[dict]:
     호출 전에 소유자 확인(get/_owned)을 마친 대화에만 쓴다.
     """
     rows = conn.execute(
-        "SELECT role, content, abstained FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+        "SELECT role, content, abstained, kind FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
         (conversation_id, HISTORY_MAX_TURNS * 2),
     ).fetchall()
     turns: list[dict] = []
@@ -110,5 +112,5 @@ def history(conn: sqlite3.Connection, conversation_id: int) -> list[dict]:
             break
         content = content[:budget]
         budget -= len(content)
-        turns.append({"role": row["role"], "content": content})
+        turns.append({"role": row["role"], "content": content, "kind": row["kind"]})
     return turns[::-1]

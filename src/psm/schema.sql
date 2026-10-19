@@ -206,6 +206,7 @@ CREATE TABLE IF NOT EXISTS messages (
     evidence_json   TEXT NOT NULL DEFAULT '[]', -- 인용한 근거 스냅샷(문서명·발췌·이미지 여부)
     abstained       INTEGER NOT NULL DEFAULT 0,
     abstain_reason  TEXT,
+    kind            TEXT NOT NULL DEFAULT 'document', -- 'general'(일반 지식)·'web'(웹 검색)이면 문서 근거 없이 답한 대화(질문·답 모두)
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

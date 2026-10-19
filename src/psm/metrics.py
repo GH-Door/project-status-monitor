@@ -296,25 +296,31 @@ def approved_summary(conn: sqlite3.Connection, project_id: int) -> dict[str, flo
     return {row["key"]: row["value"] for row in rows}  # 뒤에 온 값이 앞 값을 덮어쓴다
 
 
-def history(conn: sqlite3.Connection, project_id: int, key: str) -> list[tuple[str, float]]:
-    """반영된 값의 기간별 이력(오래된 순). 기간을 모르는 값은 뺀다."""
+def period_cutoff(as_of: date | None) -> str | None:
+    """기준일이 속한 달(YYYY-MM). 이 달까지의 값만 보인다. 기준일이 없으면 None(전부)."""
+    return as_of.isoformat()[:7] if as_of else None
+
+
+def history(conn: sqlite3.Connection, project_id: int, key: str, as_of: date | None = None) -> list[tuple[str, float]]:
+    """반영된 값의 기간별 이력(오래된 순). 기간을 모르는 값은 뺀다. as_of를 주면 그 달까지만."""
     rows = conn.execute(
         "SELECT period, value FROM business_metrics WHERE project_id = ? AND key = ? "
-        "AND status = 'approved' AND period IS NOT NULL ORDER BY period, id",
-        (project_id, key),
+        "AND status = 'approved' AND period IS NOT NULL AND (? IS NULL OR period <= ?) ORDER BY period, id",
+        (project_id, key, period_cutoff(as_of), period_cutoff(as_of)),
     ).fetchall()
     return list({row["period"]: row["value"] for row in rows}.items())
 
 
 def history_by_label(
-    conn: sqlite3.Connection, project_id: int, label: str, scope: str | None = None
+    conn: sqlite3.Connection, project_id: int, label: str, scope: str | None = None, as_of: date | None = None
 ) -> list[tuple[str, float]]:
     """AI가 뽑은 지표의 기간별 이력. 같은 하위 프로젝트에서 같은 이름(공백 무시)의 지표를 기간순으로 잇는다."""
     wanted = re.sub(r"\s+", "", label)
     rows = conn.execute(
         "SELECT period, value, label FROM business_metrics WHERE project_id = ? AND source = 'llm' "
-        "AND status = 'approved' AND period IS NOT NULL AND COALESCE(scope, '') = COALESCE(?, '') ORDER BY period, id",
-        (project_id, scope),
+        "AND status = 'approved' AND period IS NOT NULL AND COALESCE(scope, '') = COALESCE(?, '') "
+        "AND (? IS NULL OR period <= ?) ORDER BY period, id",
+        (project_id, scope, period_cutoff(as_of), period_cutoff(as_of)),
     ).fetchall()
     return list({r["period"]: r["value"] for r in rows if re.sub(r"\s+", "", r["label"] or "") == wanted}.items())
 

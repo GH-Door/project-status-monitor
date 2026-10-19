@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import re
 import shutil
 import sqlite3
@@ -254,6 +256,48 @@ def process_pdf_pages(
         pdf.close()
 
 
+def read_text_file(path: Path) -> str:
+    """텍스트 파일을 읽는다. UTF-8(BOM 허용)을 먼저, 안 되면 한글 엑셀이 저장하는 CP949."""
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "cp949"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("텍스트 인코딩을 알 수 없습니다 (UTF-8, CP949만 읽을 수 있습니다)")
+
+
+def csv_to_markdown(text: str) -> str:
+    """csv를 마크다운 표로. 첫 줄이 머리글이다. 구분자(쉼표·세미콜론·탭)는 알아서 가린다. 비어 있으면 빈 글."""
+    text = text.lstrip("\ufeff")
+    if not text.strip():
+        return ""
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t")
+    except csv.Error:
+        dialect = csv.excel
+    rows = [row for row in csv.reader(io.StringIO(text), dialect) if any(cell.strip() for cell in row)]
+    if not rows:
+        return ""
+    width = max(len(row) for row in rows)
+    lines = []
+    for number, row in enumerate(rows):
+        cells = [cell.strip().replace("|", "\\|").replace("\n", " ") for cell in row] + [""] * (width - len(row))
+        lines.append("| " + " | ".join(cells) + " |")
+        if number == 0:
+            lines.append("| " + " | ".join(["---"] * width) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def pdf_text(pdf_path: Path) -> str:
+    """PDF의 모든 페이지 글자를 이어 붙인다. 스캔본이면 빈 글에 가깝다."""
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    try:
+        return "\n\n".join(page.get_textpage().get_text_range().strip() for page in pdf).strip()
+    finally:
+        pdf.close()
+
+
 @log_timing(logger, "ingest_and_index")
 def ingest_and_index(
     conn: sqlite3.Connection,
@@ -285,9 +329,7 @@ def ingest_and_index(
     elif mime_type.startswith("image/"):
         index_asset(conn, document_id, project_id, dataset_id, "image", stored_path)
     else:
-        index_asset(
-            conn, document_id, project_id, dataset_id, "page", stored_path,
-            raw_text=stored_path.read_text(encoding="utf-8"),
-        )
+        raw_text = csv_to_markdown(read_text_file(stored_path)) if mime_type == "text/csv" else stored_path.read_text(encoding="utf-8")
+        index_asset(conn, document_id, project_id, dataset_id, "page", stored_path, raw_text=raw_text)
 
     return document_id

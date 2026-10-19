@@ -33,8 +33,6 @@ _MAX_UNIT_CHARS = 10
 _PERIOD_FORMAT = re.compile(r"\d{4}-\d{2}")
 _INPUT_CHARS_FACTOR = 2  # 한글은 글자 수보다 토큰이 많다 — 예약을 넉넉히
 _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
-_CORE_LABELS = {label for label, _, _ in metrics.CORE_META.values()}
-_CORE_LABELS_NORMALIZED = frozenset(re.sub(r"\s+", "", label) for label in _CORE_LABELS)
 # 같은 단위가 문서마다 다르게 적혀 같은 지표가 둘로 갈라지는 것을 막는다(2026-10-08 새 자료 화면에서 확인한 표기만)
 _UNIT_ALIASES = {"퍼센트": "%", "KRW": "원", "밀리미터": "mm", "데시벨": "dB"}
 _CATEGORIES = ("매출", "수익성", "비용", "운영", "일정", "기타")
@@ -156,6 +154,9 @@ def extract_and_save(
     """문서 1건에서 지표를 뽑아 검증을 통과한 것만 저장한다. 실패해도 예외 없이 사유를 돌려준다."""
     if not llm.api_key_status()["configured"]:
         return ExtractResult(error="OpenAI API 키가 없어 문서별 지표 추출을 건너뛰었습니다")
+    # 규칙 추출이 맡는 문서(매출보고서·예산 문서)에서만 핵심 지표 이름을 AI 추출에서 뺀다. 누적본 같은 다른 문서에서는 규칙이 뽑지 않으므로 그대로 둔다
+    covered = {metrics.CORE_META[key][0] for key in metrics._allowed_keys(metrics._filename(conn, document_id))}
+    covered_normalized = frozenset(re.sub(r"\s+", "", label) for label in covered)
     estimated = llm.estimate_cost_krw(
         ANSWER_MODEL, input_chars=len(text) * _INPUT_CHARS_FACTOR + 1500, expected_output_tokens=KPI_MAX_OUTPUT_TOKENS
     )
@@ -164,7 +165,7 @@ def extract_and_save(
     except budget.BudgetExceededError:
         return ExtractResult(error="API 예산 한도에 도달해 지표 추출을 건너뛰었습니다")
     try:
-        extraction, usage = extract_fn(text, sorted(_CORE_LABELS))
+        extraction, usage = extract_fn(text, sorted(covered))
     except LengthFinishReasonError:
         # 응답이 잘렸다 — 토큰은 이미 과금됐고, 다시 해도 같은 결과다
         budget.settle(conn, reservation_id, estimated)
@@ -182,7 +183,7 @@ def extract_and_save(
     lines = [(_norm(line), line.strip()) for line in text.splitlines() if line.strip()]
     kpis = breakdowns = dropped = 0
     for item in extraction.kpis[:MAX_KPIS_PER_DOCUMENT]:
-        if re.sub(r"\s+", "", item.name) in _CORE_LABELS_NORMALIZED:
+        if re.sub(r"\s+", "", item.name) in covered_normalized:
             continue  # 핵심 지표는 규칙 추출이 이미 맡았다
         if not _acceptable_label(item.name, item.unit) or not _is_verified(item.value_text, item.value, item.quote, doc):
             dropped += 1

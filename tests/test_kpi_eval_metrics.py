@@ -557,7 +557,8 @@ def test_summary_counts_failure_types_and_reports_the_context_hit_rate(conn):
     summary = kpi_eval.summarize(results)
 
     assert summary["failure_counts"] == {"retrieval_miss": 0, "generation_error": 1, "abstain_error": 1,
-                                         "citation_error": 0, "gold_suspect": 0, "system_error": 0}
+                                         "citation_error": 0, "gold_suspect": 0, "system_error": 0,
+                                         "general_missed": 0, "misrouted_general": 0, "general_wrong": 0}
     assert summary["context_hit"] == 1.0
 
 
@@ -667,3 +668,8 @@ def test_load_questions_reads_the_acceptable_documents_with_normalized_filenames
     q1, q2 = kpi_eval.load_questions(path)
 
     assert q1.acceptable == [{"filename": unicodedata.normalize("NFC", "008_인수인계_라이트")}] and q2.acceptable == []
+
+
+def test_a_web_answer_counts_as_a_general_answer_for_leak_detection():
+    assert m.classify_failure("general", context_hit=None, correct=True, risky=False, citation_ok=None, answer_kind="web") is None
+    assert m.classify_failure("answerable", context_hit=True, correct=True, risky=False, citation_ok=True, answer_kind="web") == "misrouted_general"

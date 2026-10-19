@@ -188,7 +188,7 @@ def test_follow_up_is_asked_as_a_conversation_and_hit_uses_the_rewritten_query(c
     assert asked[0] == ("연차 규정은?", None)  # 앞선 질문을 먼저 묻고
     assert asked[1][0] == "그건 며칠이야?"
     assert asked[1][1] == [  # 실제로 받은 답이 맥락으로 이어진다
-        {"role": "user", "content": "연차 규정은?"}, {"role": "assistant", "content": "연차는 15일"},
+        {"role": "user", "content": "연차 규정은?", "kind": "document"}, {"role": "assistant", "content": "연차는 15일", "kind": "document"},
     ]
     assert retrieved == ["독립 질문"]  # 검색 적중은 재작성된 질문으로 잰다
     assert results[0].followup and results[0].retrieved_hit and results[0].correct
@@ -210,3 +210,155 @@ def test_summary_reports_follow_ups_separately(conn):
 
     assert summary["first_turn"]["accuracy"] == 1.0
     assert summary["follow_up"]["accuracy"] == 0.0 and summary["follow_up"]["n_answerable"] == 1
+
+
+# --- 일반 질문 분류 평가: 일반 질문은 일반 답변으로, 그 밖의 질문은 절대 일반 답변으로 새면 안 된다 ---
+
+def _general_question(qid="G1"):
+    return kpi_eval.Question(qid, "일반", "general", "엑셀 VLOOKUP은?", [], [])
+
+
+def _general_answer(text="이렇게 씁니다"):
+    return Answer(text, [], False, kind="general")
+
+
+def test_general_question_type_is_accepted_by_the_loader(tmp_path):
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([{"id": "G1", "category": "일반", "type": "general", "question": "안녕", "project": "사업"}]), encoding="utf-8")
+
+    assert kpi_eval.load_questions(path)[0].type == "general"
+
+
+def test_a_general_question_passes_only_when_it_gets_a_general_answer(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+    questions = [_general_question("G1"), _general_question("G2")]
+    answers = iter([_general_answer(), Answer.abstain("문서에서 못 찾음")])  # G2는 문서 경로로 새서 유보됐다
+
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", questions, retrieve_fn=lambda *a: [], answer_fn=lambda *a: next(answers))
+    summary = kpi_eval.summarize(results)
+
+    assert [r.correct for r in results] == [True, False]
+    assert [r.failure_type for r in results] == [None, "general_missed"]
+    assert summary["n_general"] == 2 and summary["general_routed"] == 0.5
+
+
+def test_a_general_answer_to_a_document_question_is_a_leak_and_counts_as_a_failure(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+    questions = [_question("Q1"), _question("N1", qtype="abstain", keywords=(), gold=())]
+
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", questions, retrieve_fn=lambda *a: [_evidence(1)],
+                                answer_fn=lambda *a: _general_answer("연차는 15일"))  # 키워드가 맞아도 일반 답변이면 정답이 아니다
+    summary = kpi_eval.summarize(results)
+
+    assert [r.correct for r in results] == [False, False]
+    assert [r.failure_type for r in results] == ["misrouted_general", "misrouted_general"]
+    assert results[1].risky is True  # 유보해야 하는데 일반 답변으로 답했다 — 가장 나쁜 실패
+    assert summary["general_leaks"] == 2 and summary["risky_answer_rate"] == 1.0
+
+
+def test_a_failed_general_answer_is_a_system_error_not_a_missed_route(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", [_general_question()], retrieve_fn=lambda *a: [],
+                                answer_fn=lambda *a: Answer.abstain("오류", errored=True))
+
+    assert results[0].failure_type == "system_error"
+
+
+def test_general_questions_do_not_dilute_the_document_metrics(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+    questions = [_question("Q1"), _general_question()]
+    answers = iter([Answer("연차는 15일", [_evidence(1)], False), _general_answer()])
+
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", questions, retrieve_fn=lambda *a: [_evidence(1)], answer_fn=lambda *a: next(answers))
+    summary = kpi_eval.summarize(results)
+
+    assert summary["n_answerable"] == 1 and summary["accuracy"] == 1.0 and summary["n_abstain"] == 0
+
+
+def test_a_summary_without_general_questions_reports_no_routing_rate(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", [_question("Q1")], retrieve_fn=lambda *a: [_evidence(1)],
+                                answer_fn=lambda *a: Answer("연차는 15일", [_evidence(1)], False))
+
+    summary = kpi_eval.summarize(results)
+
+    assert summary["general_routed"] is None and summary["general_leaks"] == 0 and summary["n_general"] == 0
+
+
+def test_replayed_history_carries_each_turn_kind_like_the_service_does(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+    seen = []
+
+    def answer_fn(conn_, user_id, project_id, dataset_id, question, document_ids, history):
+        seen.append(history)
+        return _general_answer("이렇게 씁니다") if "엑셀" in question else Answer("연차는 15일", [_evidence(1)], False)
+
+    q = kpi_eval.Question("F1", "후속", "general", "예시를 하나 더", [], [], history=["엑셀 VLOOKUP은?", "연차는?"])
+    kpi_eval.run_eval(conn, 1, 1, "ds", [q], retrieve_fn=lambda *a: [], answer_fn=answer_fn)
+
+    final_history = seen[-1]
+    assert [(t["role"], t["kind"]) for t in final_history] == [
+        ("user", "general"), ("assistant", "general"), ("user", "document"), ("assistant", "document")]
+
+
+# --- 채점 보정: 일반·웹 질문은 "경로"와 "답의 내용"을 따로 본다 (예전에는 일반 경로로 나가고 답이 비어 있지 않으면 정답이었다) ---
+
+def _kw_question(qid, qtype, keywords):
+    return kpi_eval.Question(qid, "일반", qtype, "질문", keywords, [])
+
+
+def test_a_general_answer_with_wrong_content_is_not_correct_when_keywords_are_given(conn):
+    questions = [_kw_question("G1", "general", [["Ctrl+C", "Ctrl + C"]])]
+
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", questions, retrieve_fn=lambda *a: [],
+                                answer_fn=lambda *a: _general_answer("그냥 마우스로 하세요"))
+
+    assert results[0].route_ok is True and results[0].content_graded is True
+    assert results[0].correct is False and results[0].failure_type == "general_wrong"  # 경로는 맞고 답이 틀림
+
+
+def test_a_general_answer_without_keywords_is_marked_as_content_ungraded(conn):
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", [_general_question()], retrieve_fn=lambda *a: [], answer_fn=lambda *a: _general_answer())
+    summary = kpi_eval.summarize(results)
+
+    assert results[0].correct is True and results[0].content_graded is False  # 경로 성공일 뿐, 내용은 채점하지 않았다
+    assert summary["general_content_graded"] == 0 and summary["general_content_correct"] is None
+
+
+def test_the_loader_accepts_web_questions_and_a_web_question_needs_a_web_answer(conn, tmp_path):
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([{"id": "W1", "category": "웹", "type": "web", "question": "부천 날씨", "expected_keywords": [["기온", "°C"]]}]), encoding="utf-8")
+    question = kpi_eval.load_questions(path)[0]
+    web = Answer("부천은 흐리고 기온은 19°C입니다", [], False, kind="web")
+    stale = Answer("기온은 보통 15°C 안팎입니다", [], False, kind="general")  # 시간이 중요한 질문을 모델이 아는 지식으로 답했다
+    answers = iter([web, stale])
+
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", [question, question], retrieve_fn=lambda *a: [], answer_fn=lambda *a: next(answers))
+
+    assert [r.correct for r in results] == [True, False]
+    assert [r.route_ok for r in results] == [True, False]
+    assert results[1].failure_type == "general_missed"  # 웹이 필요한 질문이 일반 답변으로 나갔다
+
+
+def test_summary_reports_latency_median_and_p95_per_question_type(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+    questions = [_question("Q1"), _general_question("G1"), _general_question("G2")]
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", questions, retrieve_fn=lambda *a: [_evidence(1)],
+                                answer_fn=lambda c, u, p, d, q, *a: _general_answer() if q.startswith("엑셀") else Answer("15", [_evidence(1)], False))
+    results = [kpi_eval.replace(r, latency_s=t) for r, t in zip(results, [3.0, 2.0, 4.0], strict=True)]
+
+    by_type = kpi_eval.summarize(results)["latency_by_type"]
+
+    assert by_type["general"] == {"n": 2, "median_s": 3.0, "p95_s": 4.0}
+    assert by_type["answerable"]["n"] == 1
+
+
+def test_answer_stage_timings_are_carried_into_the_result_and_averaged(conn):
+    _seed_asset(conn, 1, "a.pdf", 2)
+    answer = Answer("15", [_evidence(1)], False, timings={"retrieve": 0.4, "answer": 1.6})
+
+    results = kpi_eval.run_eval(conn, 1, 1, "ds", [_question("Q1")], retrieve_fn=lambda *a: [_evidence(1)], answer_fn=lambda *a: answer)
+
+    assert results[0].stage_s == {"retrieve": 0.4, "answer": 1.6}
+    assert kpi_eval.summarize(results)["stage_mean_s"] == {"retrieve": 0.4, "answer": 1.6}

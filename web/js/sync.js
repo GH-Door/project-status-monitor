@@ -2,7 +2,7 @@ import { api, selectCompany } from "./api.js";
 import { resetCompanyState } from "./state.js";
 import { toast } from "./dom.js";
 
-const ALLOWED = /\.(md|txt|pdf|png|jpe?g|webp)$/i;
+const ALLOWED = /\.(md|txt|csv|pdf|png|jpe?g|webp)$/i;
 const LABEL = "폴더 동기화";
 let syncing = false;
 
@@ -25,7 +25,7 @@ export async function syncFolder(afterSync) {
   const files = picked.filter((f) => ALLOWED.test(f.name) &&
     !(f.webkitRelativePath || f.name).split("/").some(p => /^[._]/.test(p) || /정답|answer|gold/i.test(p)));
   if (!files.length) {
-    if (picked.length) toast("선택한 폴더에 올릴 수 있는 문서(md, txt, pdf, png, jpg, webp)가 없어요.", true);
+    if (picked.length) toast("선택한 폴더에 올릴 수 있는 문서(md, txt, csv, pdf, png, jpg, webp)가 없어요.", true);
     return;
   }
   const name = (files[0].webkitRelativePath || "").split("/")[0].normalize("NFC").trim();
