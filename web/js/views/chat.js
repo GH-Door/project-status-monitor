@@ -11,7 +11,7 @@ const EXAMPLES = [
 ];
 
 function uploadDialog(onDone) {
-  const file = el("input", { type: "file", accept: ".md,.txt,.pdf,.png,.jpg,.jpeg,.webp", "aria-label": "파일" });
+  const file = el("input", { type: "file", accept: ".md,.txt,.csv,.pdf,.png,.jpg,.jpeg,.webp", "aria-label": "파일" });
   const approved = el("input", { type: "checkbox", id: "exp" });
   const submit = el("button", { type: "button", class: "btn primary" }, "올리고 질문에 쓰기");
   submit.addEventListener("click", async () => {
@@ -28,7 +28,7 @@ function uploadDialog(onDone) {
     } catch (error) { toast(error.message, true); submit.disabled = false; submit.textContent = "올리고 질문에 쓰기"; }
   });
   openDialog(el("div", { class: "stack" }, el("h2", {}, "파일 올리기"),
-    el("p", { class: "muted small" }, "회사 문서에 추가돼요. md, txt는 바로 색인되고, PDF·이미지는 판독 비용이 들어요(예산에서 차감)."),
+    el("p", { class: "muted small" }, "회사 문서에 추가돼요. md, txt, csv, PDF, 이미지를 올릴 수 있어요. 새로운 자료의 색인·지표 추출·이미지 판독에는 API 비용이 발생할 수 있어요."),
     file, el("label", { class: "row", for: "exp" }, approved, "이 자료를 외부 API(OpenAI)로 보내도 돼요 (반출 승인)"),
     el("div", { class: "row", style: "justify-content:flex-end" }, el("button", { type: "button", class: "btn", onclick: closeDialog }, "취소"), submit)));
 }
@@ -86,7 +86,7 @@ export async function render() {
     fill(docsPane,
       el("div", { class: "row", style: "justify-content:space-between" }, el("h3", {}, "문서 선택"),
         el("button", { type: "button", class: "btn ghost small", onclick: () => { state.selectedDocs.clear(); drawDocs(); } }, "전체 해제")),
-      el("p", { class: "small muted" }, state.selectedDocs.size ? `${state.selectedDocs.size}개 문서 안에서만 답해요` : "고르지 않으면 이 회사의 모든 문서를 대상으로 해요"),
+      el("p", { class: "small muted" }, state.selectedDocs.size ? `${company.company.name} · 선택한 ${state.selectedDocs.size}개 문서 안에서만 답해요` : `${company.company.name}의 문서 ${docs.length}개만 대상으로 답해요. 다른 기업 문서는 검색하지 않아요.`),
       docs.length === 0 && el("p", { class: "muted small" }, "등록된 문서가 없어요."),
       docs.map((d) => el("label", { class: "doc-item" },
         el("input", { type: "checkbox", checked: state.selectedDocs.has(d.id), disabled: d.status === "pending",

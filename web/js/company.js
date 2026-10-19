@@ -1,17 +1,17 @@
-// 지금 보고 있는 회사 id. 서버에는 요청 헤더(X-Company-Id)로 알린다. 저장이 막힌 브라우저에서는 첫 회사를 본다.
-const KEY = "psm.company";
+// 탭별 기업 선택. 다른 기업을 연 탭이 진행 중인 질문의 검색 범위를 바꾸지 않는다.
+const KEY = "psm.companyId";
+let selected = null;
+try { selected = sessionStorage.getItem(KEY); } catch { /* 저장이 막혀도 현재 탭 메모리에서 유지한다 */ }
 
 export function companyId() {
-  try {
-    return localStorage.getItem(KEY);
-  } catch {
-    return null;
-  }
+  return selected;
 }
 
 export function setCompanyId(id) {
+  selected = id == null ? null : String(id);
   try {
-    localStorage.setItem(KEY, String(id));
+    if (selected) sessionStorage.setItem(KEY, selected);
+    else sessionStorage.removeItem(KEY);
   } catch {
     // 저장할 수 없으면 이번 화면만 바뀐다
   }

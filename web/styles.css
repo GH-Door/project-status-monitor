@@ -331,3 +331,6 @@ dialog::backdrop { background: #1c1c1c66; }
   .side, .top, .no-print, .toast { display: none !important; } .shell { display: block; } #view { padding: 0; max-width: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+.company-picker { display: grid; gap: 8px; margin: 0 0 18px; font-size: 12px; }
+.company-picker select { width: 100%; min-width: 0; padding: 8px; border: 1px solid #d7dbe2; border-radius: 8px; background: white; color: #222; }

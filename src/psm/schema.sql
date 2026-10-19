@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 -- 사업별 접근 권한. is_admin 사용자는 이 표와 무관하게 전체 접근.
+CREATE TABLE IF NOT EXISTS company_folders (
+    name TEXT PRIMARY KEY,
+    project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS project_members (
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -101,6 +106,13 @@ CREATE TABLE IF NOT EXISTS assets (
 );
 
 -- API 호출 예산 예약·정산 기록(§10). status: reserved(예약) -> settled(정산) / failed(취소)
+CREATE TABLE IF NOT EXISTS asset_index_links (
+    asset_id INTEGER PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+    source_asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
+    dataset_id TEXT NOT NULL,
+    CHECK (asset_id != source_asset_id)
+);
+
 CREATE TABLE IF NOT EXISTS api_usage (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id    INTEGER REFERENCES projects(id) ON DELETE SET NULL,

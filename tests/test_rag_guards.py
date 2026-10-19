@@ -5,6 +5,53 @@ import pytest
 from psm import auth, llm, rag
 
 
+@pytest.mark.parametrize("pipeline", ["gates", "planner"])
+@pytest.mark.parametrize("fabricated", [False, True])
+def test_both_pipelines_keep_original_question_and_apply_exact_item_evidence(conn, monkeypatch, pipeline, fabricated):
+    from types import SimpleNamespace
+
+    from psm import llm_responses
+    from psm.planner import Plan
+
+    _seed_project(conn)
+    _seed_asset(conn, 1, 1)
+    text = "청구 합계는 100원입니다."
+    conn.execute("UPDATE assets SET description_text=? WHERE id=1", (text,))
+    conn.execute("UPDATE documents SET mime_type='text/markdown', filename='doc.md' WHERE id=1")
+    conn.commit()
+    monkeypatch.setattr(rag, "GENERAL_CHAT", True)
+    monkeypatch.setattr(rag, "ANSWER_PIPELINE", pipeline)
+    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+    monkeypatch.setattr(llm, "rewrite_question", lambda *a, **k: ("검색용 독립 질문", llm.Usage(1, 1)))
+    monkeypatch.setattr(llm_responses, "plan_question", lambda *a, **k: (Plan("document", query="검색용 독립 질문"), llm.Usage(1, 1)))
+    seen = {}
+
+    def retrieve(ds, query, **kwargs):
+        seen["search"] = query
+        return [_hit(1, text)]
+
+    def parse(**kwargs):
+        seen["answer_input"] = kwargs["messages"][1]["content"][0]["text"]
+        result = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
+            asked="청구 합계", found="청구 합계 100원", status="supported", answer="청구 합계는 100원입니다.",
+            sources=[llm.ItemSource(asset_id=1, quotes=["청구 합계는 101원입니다." if fabricated else text])], reason="")])
+        assert kwargs["response_format"] is llm.CheckedAnswerResult
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=result))],
+                               usage=SimpleNamespace(prompt_tokens=10, completion_tokens=10))
+
+    monkeypatch.setattr(rag.dify, "retrieve", retrieve)
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse))))
+    question = "우리 사업 청구 합계는 얼마야?"
+    result = rag.answer_question(conn, 1, 1, "ds", question, history=[{"role":"user", "content":"그 사업 이야기를 해줘", "kind":"document"}])
+    assert seen["search"] == "검색용 독립 질문"
+    assert seen["answer_input"].startswith("질문: " + question)
+    assert result.abstained is fabricated
+    assert result.kind == "document"
+    assert {"retrieve", "answer"} <= result.timings.keys()
+    if fabricated:
+        assert result.evidence == [] and "인용문" in result.abstain_reason
+
+
 def _seed_project(conn, project_id=1, user_id=1, role="viewer"):
     conn.execute(
         "INSERT INTO users (id, username, password_hash, display_name) VALUES (?, 'u', 'x', 'U')",
@@ -310,7 +357,7 @@ def test_follow_up_searches_with_rewritten_query_and_passes_history_to_the_answe
     )
 
     assert seen["query"] == "정식 출시 이후 남은 일정은?"
-    assert seen["answer_args"] == ("정식 출시 이후 남은 일정은?", PRIOR)
+    assert seen["answer_args"] == ("그 다음 일정은?", PRIOR)  # 항목 확인은 사용자 원문을 기준으로 한다
     assert result.rewritten_query == "정식 출시 이후 남은 일정은?"
     # 재작성 호출도 예산 예약·정산을 거친다
     assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'settled'").fetchone()[0] == 2  # 재작성 + 답변
@@ -407,6 +454,40 @@ def test_returned_evidence_keeps_the_retrieved_chunk_for_display(conn, monkeypat
     result = rag.answer_question(conn, user_id=1, project_id=1, dataset_id="ds", question="총액?")
 
     assert [e.content for e in result.evidence] == ["머리글"]  # 근거 카드는 짧게 유지한다
+
+
+@pytest.mark.parametrize("quote, blocked", [("최종 청구액은 110원", False), ("최종 청구액은 120원", True)])
+def test_item_evidence_is_checked_against_the_full_model_context_without_an_extra_call(conn, monkeypatch, quote, blocked):
+    from types import SimpleNamespace
+
+    _seed_project(conn)
+    _seed_asset(conn, asset_id=1, project_id=1)
+    _set_full_text(conn, 1, "머리글\n최종 청구액은 110원")
+    monkeypatch.setattr(rag.dify, "retrieve", lambda *a, **k: [_hit(1, "머리글")])
+    monkeypatch.setattr(rag, "FULL_DOCUMENT_CONTEXT", True)
+    monkeypatch.setattr(rag, "VERIFY_ANSWERS", False)
+    monkeypatch.setattr(llm, "ITEM_CHECK", True)
+    calls = []
+
+    def parse(**kwargs):
+        calls.append(kwargs)
+        parsed = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
+            asked="최종 청구액", found=quote, status="supported", answer=quote + "입니다.",
+            sources=[llm.ItemSource(asset_id=1, quotes=[quote])], reason="",
+        )])
+        return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=30, completion_tokens=20),
+            choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
+
+    monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse))))
+    result = rag.answer_question(conn, 1, 1, "ds", "최종 청구액은?")
+    assert result.abstained is blocked
+    assert len(calls) == 1
+    assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'settled'").fetchone()[0] == 1
+    if not blocked:
+        assert result.text == "최종 청구액은 110원입니다."
+        assert [e.content for e in result.evidence] == ["머리글"]
+    else:
+        assert "인용문" in result.abstain_reason
 
 
 def test_chunk_is_used_when_the_full_text_is_missing(conn, monkeypatch):

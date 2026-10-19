@@ -1,10 +1,13 @@
-import { companyId } from "./company.js";
+import { companyId, setCompanyId } from "./company.js";
 
 export class ApiError extends Error {}
 
+export const selectedCompanyId = companyId;
+export const selectCompany = setCompanyId;
+
 async function call(method, url, body) {
   const init = { method, headers: { "X-Requested-With": "psm" } };  // 다른 사이트에서 온 요청과 구분(CSRF 방어)
-  if (companyId()) init.headers["X-Company-Id"] = companyId();  // 지금 보는 회사
+  if (companyId() && url !== "/api/companies") init.headers["X-Company-Id"] = companyId();
   if (body instanceof FormData) init.body = body;
   else if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";

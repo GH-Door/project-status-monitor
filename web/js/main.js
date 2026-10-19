@@ -1,7 +1,6 @@
-import { api } from "./api.js";
-import { setCompanyId } from "./company.js";
 import { el, toast } from "./dom.js";
-import { state, loadCompany } from "./state.js";
+import { api, selectedCompanyId, selectCompany } from "./api.js";
+import { state, loadCompany, resetCompanyState } from "./state.js";
 import { syncFolder } from "./sync.js";
 
 const ROUTES = [
@@ -25,16 +24,24 @@ function drawNav() {
 
 let showToken = 0;
 
-// 사이드바 회사 이름. 회사가 둘 이상이면 고를 수 있다(고르면 모든 화면이 그 회사 기준으로 바뀐다).
-async function drawCompany(c) {
-  const box = document.getElementById("company-name");
-  if (c.empty) return box.replaceChildren();
-  const companies = await api.get("/api/companies").catch(() => []);
-  if (companies.length < 2) return box.replaceChildren(c.company.name);
-  const choose = (e) => { setCompanyId(e.target.value); state.scope = null; show(); };  // 하위 프로젝트 선택은 회사마다 다르다
-  box.replaceChildren(el("select", { "aria-label": "회사 선택", onchange: choose },
-    companies.map((co) => el("option", { value: co.id, selected: co.id === c.company.id }, co.name))));
+const companyPicker = document.getElementById("company-picker");
+async function drawCompanies() {
+  const companies = await api.get("/api/companies");
+  if (selectedCompanyId() && !companies.some(c => String(c.id) === selectedCompanyId())) {
+    selectCompany(null);
+    resetCompanyState();
+  }
+  companyPicker.replaceChildren(...companies.map(c => el("option", { value: c.id },
+    `${c.folder_name ? c.name : `${c.name} · 기존 문서`} (${c.documents}개)`)));
+  if (selectedCompanyId()) companyPicker.value = selectedCompanyId();
+  companyPicker.disabled = companies.length === 0;
 }
+companyPicker.addEventListener("change", () => {
+  selectCompany(companyPicker.value);
+  resetCompanyState();
+  // 진행 중인 이전 화면의 응답과 대화 상태도 함께 정리한다.
+  location.reload();
+});
 
 async function show() {
   const token = ++showToken;  // 늦게 끝난 이전 화면이 지금 화면을 덮어쓰지 않게 한다
@@ -43,6 +50,7 @@ async function show() {
   document.title = `${route[1]} · AICHEMIST 사업 현황`;
   drawNav();
   try {
+    await drawCompanies();
     const { render } = await route[2]();
     const node = await render();
     if (token !== showToken) return;
@@ -53,8 +61,9 @@ async function show() {
     toast(error.message, true);
   }
   loadCompany().then((c) => {  // 사이드바의 회사 이름과 확인 필요 개수
+    if (token !== showToken) return;
+    document.getElementById("company-name").replaceChildren(...(c.empty ? [] : [c.company.name]));
     drawNav();
-    return drawCompany(c);
   }).catch(() => {});
 }
 

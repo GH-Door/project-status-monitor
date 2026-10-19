@@ -90,5 +90,5 @@ def answer(
     # ponytail: 문서+웹 복합("both")은 아직 문서 쪽만 답한다. 병렬 실행·종합 호출은 채택 판단 뒤 보강으로 추가(계획서 2절)
     if plan.action == "both":
         logger.warning("project=%s 문서+웹 복합 질문 — 아직 문서 경로만 실행", project_id)
-    result = rag._answer(conn, user_id, project_id, dataset_id, plan.query or question, None, turns, timings)
+    result = rag._answer(conn, user_id, project_id, dataset_id, question, None, turns, timings, search_query=plan.query)
     return replace(result, rewritten_query=plan.query, timings=timings)

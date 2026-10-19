@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from psm import budget, dify, ingest, llm
+from psm import budget, dify, index_reuse, ingest, llm
 from psm.auth import require_project_access
 from psm.config import (
     ANSWER_CONTEXT_DOCS,
@@ -222,7 +222,9 @@ def retrieve_evidence(
         if not names:
             return []  # 고른 문서가 아직 색인되지 않았다
     # 조각을 넉넉히 받아 문서별로 합산한다. 문서를 골랐을 때 Dify가 필터를 무시해도 선택 문서가 밀려나지 않는 효과도 있다.
-    hits = dify.retrieve(dataset_id, question, top_k=CANDIDATE_CHUNKS, document_names=names)
+    hits = index_reuse.retrieve_linked(conn, project_id, question, document_ids or None, CANDIDATE_CHUNKS)
+    if hits is None:
+        hits = dify.retrieve(dataset_id, question, top_k=CANDIDATE_CHUNKS, document_names=names)
     preferred_type = None
     if DOC_TYPE_ROUTING:
         doc_types = _candidate_doc_types(conn, project_id, hits)
@@ -459,12 +461,11 @@ def answer_question(
             search_query = rewrite_query(conn, project_id, question, history)
     else:
         search_query = None
-    standalone = search_query or question
     if GENERAL_CHAT and not document_ids:  # 문서를 골랐으면 문서 질문이다
         general = _general_answer(conn, project_id, question, history, search_query, timings)
         if general is not None:
             return replace(general, rewritten_query=search_query)
-    answer = _answer(conn, user_id, project_id, dataset_id, standalone, document_ids, history, timings)
+    answer = _answer(conn, user_id, project_id, dataset_id, question, document_ids, history, timings, search_query=search_query)
     return replace(answer, rewritten_query=search_query, timings=timings)
 
 
@@ -477,10 +478,12 @@ def _answer(
     document_ids: list[int] | None,
     history: list[dict] | None,
     timings: dict[str, float] | None = None,
+    *,
+    search_query: str | None = None,
 ) -> Answer:
     timings = {} if timings is None else timings
     with _stage(timings, "retrieve"):
-        evidence = retrieve_evidence(conn, project_id, dataset_id, question, document_ids, limit=ANSWER_CONTEXT_DOCS)
+        evidence = retrieve_evidence(conn, project_id, dataset_id, search_query or question, document_ids, limit=ANSWER_CONTEXT_DOCS)
     if not evidence:
         logger.warning("project=%s 답변 유보: 근거 없음", project_id)
         return Answer.abstain("허용된 사업 자료에서 근거를 찾지 못했습니다")
@@ -491,6 +494,7 @@ def _answer(
         ANSWER_MODEL,
         input_chars=sum(len(e.content) for e in model_evidence) + sum(len(t["content"]) for t in history or []),
         num_images=len(images),
+        expected_output_tokens=llm.answer_output_limit(),
     )
     reservation_id = budget.reserve(conn, "answer", estimated, project_id=project_id)
     try:

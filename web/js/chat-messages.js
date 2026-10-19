@@ -20,7 +20,7 @@ export function botMessage(result) {
     return hold("답변하는 중 오류가 났어요", result.abstain_reason || "잠시 뒤에 다시 시도해 주세요.", "같은 질문을 다시 보내 보세요.");
   }
   if (result.abstained) {
-    return hold("문서에서 답을 찾지 못했어요", result.abstain_reason || "근거를 확인하지 못했어요.",
+    return hold("요청한 내용을 확인하지 못했어요", result.abstain_reason || "현재 검색된 자료에서 요청한 항목의 근거를 확인하지 못했어요.",
       "질문에 문서에 나오는 이름이나 기간을 넣어 구체적으로 물어보세요.");
   }
   if (result.kind === "clarify") {  // 어느 사업·기간·항목인지 정할 수 없어 되묻는 것 — 답이 아니라 질문이다

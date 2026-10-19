@@ -1,4 +1,4 @@
-"""api.py 테스트 — Dify·OpenAI는 가짜로 대체하고 엔드포인트 계약만 확인한다. 회사는 하나다."""
+"""api.py 테스트 — Dify·OpenAI는 가짜로 대체하고 엔드포인트 계약과 기업 격리를 확인한다."""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -491,6 +491,98 @@ def test_company_layout_follows_the_selected_project_only(client, tmp_path):
     assert client.get("/api/company", params={"scope": "N01-P02"}).json()["layout"]["custom"] is False
 
 
+# 기업 폴더 전환은 기존 문서의 이동/삭제 없이 새 회사에 등록한다.
+def _folder_upload(client, name, text=SALES):
+    response = client.post("/api/companies", json={"name": name})
+    assert response.status_code == 200
+    company = response.json()
+    headers = {"X-Company-Id": str(company["id"])}
+    uploaded = client.post("/api/documents", headers=headers,
+                           files={"file": ("04_2026년09월_매출보고서.md", text.encode("utf-8"), "text/markdown")},
+                           data={"export_approved": "true"})
+    assert uploaded.status_code == 200, uploaded.text
+    return company, headers, uploaded.json()
+
+
+def test_folder_company_preserves_original_and_isolates_documents_and_dashboard(client, tmp_path):
+    _synced(client, tmp_path)
+    original = client.get("/api/documents").json()
+    a, a_headers, uploaded = _folder_upload(client, "기업가")
+    b, b_headers, _ = _folder_upload(client, "기업나", "9월 순매출은 1,000,000원이다.")
+    assert a["id"] != b["id"]
+    assert client.get("/api/documents").json() == original
+    assert [d["id"] for d in client.get("/api/documents", headers=a_headers).json()] == [uploaded["document_id"]]
+    view = client.get("/api/company", headers=a_headers).json()
+    assert view["company"]["name"] == "기업가"
+    assert view["documents"]["total"] == 1
+    assert view["kpis"]["sales"]["net_sales"] == 39_350_000
+    assert client.get("/api/company", headers=b_headers).json()["kpis"]["sales"]["net_sales"] == 1_000_000
+    assert len(client.get("/api/companies").json()) == 3
+    # 동기화 반복: 폴더 이름은 NFC로 통일, 이미 색인한 내용은 재등록하지 않는다.
+    import unicodedata
+    again, _, repeated = _folder_upload(client, unicodedata.normalize("NFD", "기업가"))
+    assert again["id"] == a["id"] and repeated["is_new"] is False
+    assert repeated["document_id"] == uploaded["document_id"]
+
+
+def test_company_question_rejects_foreign_documents_and_conversations(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    foreign = client.get("/api/documents").json()[0]["id"]
+    a, headers, _ = _folder_upload(client, "문답기업", SALES + " 새 기업 원문")
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    response = client.post("/api/ask", headers=headers,
+                           json={"question": "매출?", "document_ids": [foreign]})
+    assert response.status_code == 422
+    with api._db() as (conn, user_id):
+        from psm import conversations
+        original = library.company_project(conn)["id"]
+        old_conversation = conversations.create(conn, original, user_id, "다른 기업의 질문")
+        conn.execute("UPDATE projects SET dify_dataset_id = ? WHERE id = ?", ("ds-selected", a["id"]))
+        conn.commit()
+        other_asset = conn.execute("SELECT id FROM assets WHERE project_id = ? LIMIT 1", (original,)).fetchone()["id"]
+    assert client.get(f"/api/conversations/{old_conversation}", headers=headers).status_code == 404
+    assert client.get("/api/conversations", headers=headers).json() == []
+    assert client.post("/api/ask", headers=headers,
+                       json={"question": "매출?", "conversation_id": old_conversation}).status_code == 404
+    seen = []
+
+    def retrieve(dataset_id, query, **kwargs):
+        seen.append(dataset_id)
+        # Dify가 다른 회사 근거를 반환하더라도 서버에서 걸러야 한다.
+        return [{"document_name": f"asset:{other_asset}", "content": SALES, "score": 0.9}]
+
+    monkeypatch.setattr(dify, "retrieve", retrieve)
+    response = client.post("/api/ask", headers=headers, json={"question": "매출?"})
+    assert response.status_code == 200
+    assert seen == ["ds-selected"]
+    assert response.json()["abstained"] is True
+    assert response.json()["evidence"] == []
+    assert client.get("/api/documents").json()[0]["id"] == foreign
+
+
+def test_invalid_or_empty_company_never_falls_back_to_original_documents(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    for value, expected in [("-1", 422), ("0", 422), ("abc", 422), ("999999", 404)]:
+        assert client.get("/api/documents", headers={"X-Company-Id": value}).status_code == expected
+    company = client.post("/api/companies", json={"name": "빈 기업"}).json()
+    headers = {"X-Company-Id": str(company["id"])}
+    assert client.get("/api/documents", headers=headers).json() == []
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    assert client.post("/api/ask", headers=headers, json={"question": "매출?"}).status_code == 409
+    # 서버 전체 문서 폴더를 선택 기업에 섞어 넣는 기존 API는 막는다.
+    assert client.post("/api/library/sync", headers=headers).status_code == 409
+    assert len(client.get("/api/documents").json()) == 2
+
+
+def test_simultaneous_company_requests_do_not_share_selection(client, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    _synced(client, tmp_path)
+    a, ha, _ = _folder_upload(client, "동시가")
+    b, hb, _ = _folder_upload(client, "동시나")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        tasks = [pool.submit(client.get, "/api/company", headers=h) for h in [ha, hb] * 4]
+    assert [f.result().json()["company"]["id"] for f in tasks] == [a["id"], b["id"]] * 4
+    assert client.get("/api/company").json()["company"]["name"] == library.DEFAULT_COMPANY_NAME
 # --- 여러 회사: 폴더 이름이 회사를 정하고, 요청 헤더가 현재 회사를 정한다 ---
 
 def _upload(client, name, text, company=None):
@@ -524,12 +616,47 @@ def test_company_header_selects_which_company_the_dashboard_shows(client):
     assert client.get("/api/company").json()["company"]["name"] == "라온공간워크스"  # 헤더가 없으면 첫 회사
 
 
-def test_an_unknown_company_header_falls_back_to_the_first_company(client):
+def test_an_unknown_company_header_does_not_expose_the_first_company(client):
     _upload(client, "a.md", "첫 회사의 충분히 긴 본문입니다 1.", company="01_라온공간워크스")
 
-    body = client.get("/api/company", headers={"X-Company-Id": "99999"}).json()
+    response = client.get("/api/company", headers={"X-Company-Id": "99999"})
+    assert response.status_code == 404
 
-    assert body["company"]["name"] == "라온공간워크스"
+
+def test_normalized_folder_name_keeps_existing_legacy_company_and_index(client, monkeypatch):
+    company, headers, uploaded = _folder_upload(client, "01_라온공간워크스")
+    with api._db() as (conn, _):
+        conn.execute("UPDATE projects SET name='01_라온공간워크스' WHERE id=?", (company["id"],))
+        conn.commit()
+        before = [tuple(r) for r in conn.execute("SELECT * FROM assets ORDER BY id")]
+
+    def no_index(*a, **k):
+        raise AssertionError("기존 원문을 다시 색인하면 안 됩니다")
+
+    monkeypatch.setattr(dify, "create_dataset", no_index)
+    monkeypatch.setattr(dify, "add_text_document", no_index)
+    repeated = _upload(client, "a.md", SALES, company="라온공간워크스")
+    assert repeated["company_id"] == company["id"]
+    assert repeated["document_id"] == uploaded["document_id"] and not repeated["is_new"]
+    assert len(client.get("/api/companies").json()) == 1
+    assert client.get("/api/company", headers=headers).json()["company"]["name"] == "01_라온공간워크스"
+    with api._db() as (conn, _):
+        assert [tuple(r) for r in conn.execute("SELECT * FROM assets ORDER BY id")] == before
+
+
+def test_upload_company_name_cannot_override_the_selected_company(client):
+    _, headers, _ = _folder_upload(client, "기업가")
+    before = client.get("/api/companies").json()
+    response = client.post("/api/documents", headers=headers,
+        files={"file": ("a.md", SALES.encode(), "text/markdown")},
+        data={"export_approved": "true", "company": "기업나"})
+    assert response.status_code == 422
+    assert client.get("/api/companies").json() == before
+
+
+def test_sorting_prefix_normalization_does_not_strip_a_numeric_company_name(client):
+    assert client.post("/api/companies", json={"name":"3M테크"}).json()["name"] == "3M테크"
+    assert client.post("/api/companies", json={"name":"01_"}).status_code == 422
 
 
 # --- 일반 질문: 응답에 kind·errored가 있고, 일반 답변은 근거 없이 저장되며, 이어 묻는 질문에 맥락으로 간다 ---
