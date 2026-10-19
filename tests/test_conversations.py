@@ -90,6 +90,26 @@ def test_abstained_answer_is_marked_in_history(seeded):
     assert "유보" in conversations.history(seeded, conv_id)[1]["content"]
 
 
+def test_history_keeps_citation_failure_separate_from_missing_data(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "예산과 집행액은?")
+    items = [
+        {"asked":"예산", "status":"supported", "answer":"68,000,000원입니다.", "reason":"", "sources":[]},
+        {"asked":"집행액", "status":"citation_error", "answer":"유출 금지", "reason":"원문을 불러오지 못했습니다.", "sources":[]},
+    ]
+    _turn(seeded, conv_id, "예산과 집행액은?", "표시용 답변",
+          answer_meta={"partial":True,"reason_code":"citation_error","item_results":items})
+    content = conversations.history(seeded, conv_id)[1]["content"]
+    assert "68,000,000원" in content and "원문을 불러오지 못했습니다" in content
+    assert "근거를 찾지 못해" not in content and "유출 금지" not in content
+
+
+def test_old_citation_failure_reason_is_not_replaced_by_no_evidence(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "예산은?")
+    _turn(seeded, conv_id, "예산은?", "", abstained=True,
+          abstain_reason="인용문을 해당 출처의 원문에서 확인하지 못했습니다.")
+    assert "인용문을 해당 출처의 원문에서 확인하지 못했습니다" in conversations.history(seeded, conv_id)[1]["content"]
+
+
 # --- 일반 답변 표시(kind): 다시 열어도 '일반 답변' 배지가 남고, 답변 맥락에는 종류가 함께 간다 ---
 
 def test_a_general_answer_keeps_its_kind_when_the_conversation_is_reopened(seeded):

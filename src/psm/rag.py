@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import httpx
+
 from psm import budget, dify, index_reuse, ingest, llm
 from psm.auth import require_project_access
 from psm.config import (
@@ -68,10 +70,15 @@ class Answer:
     rewritten_query: str | None = None  # 이전 대화가 있을 때 실제로 검색에 쓴 독립 질문
     kind: str = "document"  # "general"은 문서 근거 없이 일반 지식으로, "web"은 웹 검색으로 답한 것(둘 다 evidence가 없다)
     timings: dict[str, float] = field(default_factory=dict)  # 단계별 걸린 시간(초). 평가에서 지연이 어디서 나는지 가르는 데 쓴다
+    partial: bool = False
+    reason_code: str | None = None
+    item_results: list[dict] = field(default_factory=list)
+    web_verification: dict = field(default_factory=dict)
 
     @classmethod
-    def abstain(cls, reason: str, errored: bool = False) -> Answer:
-        return cls(text="", evidence=[], abstained=True, abstain_reason=reason, errored=errored)
+    def abstain(cls, reason: str, errored: bool = False, *, reason_code: str | None = None) -> Answer:
+        return cls(text="", evidence=[], abstained=True, abstain_reason=reason, errored=errored,
+                   reason_code=reason_code or ("service_error" if errored else None))
 
 
 def _official_values(conn: sqlite3.Connection, project_id: int) -> dict:
@@ -385,8 +392,37 @@ def _reserved_call(
         budget.cancel(conn, reservation_id)
         logger.exception("project=%s %s", project_id, failure_message)
         return None
-    budget.settle(conn, reservation_id, llm.actual_cost_krw(model, usage.prompt_tokens, usage.completion_tokens) + extra_krw)
+    actual_extra = (round(usage.web_search_calls * WEB_SEARCH_FEE_USD * USD_TO_KRW, 2)
+                    if usage.web_search_calls is not None else extra_krw)
+    budget.settle(conn, reservation_id, llm.actual_cost_krw(model, usage.prompt_tokens, usage.completion_tokens) + actual_extra)
     return result
+
+
+def verified_web_answer(conn, project_id: int, question: str, history: list[dict], timings: dict) -> Answer:
+    """gates/planner 공통. 웹 실패를 일반 지식이나 회사 자료 부족으로 바꾸지 않는다."""
+    from psm import web_evidence
+
+    # 최대 검색 2회 + 원문 검증 2회에 필요한 비용을 먼저 예약한다.
+    estimated = web_evidence.MAX_ATTEMPTS * llm.estimate_cost_krw(
+        WEB_MODEL, input_chars=len(question) + sum(len(t["content"]) for t in history)
+        + WEB_SEARCH_INPUT_CHARS_ESTIMATE + web_evidence.MAX_SOURCES * web_evidence.MAX_SOURCE_CHARS + 5000,
+        expected_output_tokens=GENERAL_MAX_OUTPUT_TOKENS + web_evidence.REVIEW_TOKENS)
+    with _stage(timings, "web"):
+        result = _reserved_call(
+            conn, project_id, estimated, lambda: llm.answer_web_with_sources(question, history, model=WEB_MODEL),
+            "웹 검색·원문 검증 실패", model=WEB_MODEL,
+            extra_krw=round(web_evidence.MAX_ATTEMPTS * WEB_SEARCH_FEE_USD * USD_TO_KRW, 2))
+    if result is None:
+        return replace(Answer.abstain("웹 검색 서비스를 불러오지 못했습니다. 자료 부족 여부는 확인되지 않았습니다.",
+                                      errored=True, reason_code="web_search_error"), kind="web", timings=timings)
+    if not result.verified or not result.text or not result.sources:
+        reason = result.reason or "웹 답변을 뒷받침하는 출처 원문을 확인하지 못했습니다."
+        return Answer(text="", evidence=[], abstained=True, abstain_reason=reason, kind="web",
+                      # 웹의 오류도 기록해 실패/지역 불일치를 구분해 조사할 수 있도록 한다.
+                      reason_code=result.reason_code or "web_no_source", timings=timings,
+                      item_results=result.item_results, web_verification=result.audit)
+    return Answer(text=llm.format_web_answer(result), evidence=[], abstained=False, kind="web", timings=timings,
+                  partial=result.partial, item_results=result.item_results, web_verification=result.audit)
 
 
 def _general_answer(
@@ -416,15 +452,7 @@ def _general_answer(
         return None
     general_turns = [t for t in turns if t.get("kind") in ("general", "web")]  # 회사 문서에서 나온 값이 일반·웹 답변으로 새지 않게 한다
     if kind == "web":
-        with _stage(timings, "web"):
-            text = _reserved_call(
-                conn, project_id,
-                llm.estimate_cost_krw(WEB_MODEL, input_chars=len(question) + sum(len(t["content"]) for t in general_turns) + WEB_SEARCH_INPUT_CHARS_ESTIMATE,
-                                      expected_output_tokens=GENERAL_MAX_OUTPUT_TOKENS),
-                lambda: llm.answer_web(question, general_turns), "웹 검색 답변 생성 실패 — 일반 답변으로 처리",
-                extra_krw=round(WEB_SEARCH_FEE_USD * USD_TO_KRW, 2), model=WEB_MODEL)
-        if text:
-            return Answer(text=text, evidence=[], abstained=False, kind="web", timings=timings)  # 검색이 실패해도 문서 경로로 새지 않고 아래 일반 답변으로 간다
+        return verified_web_answer(conn, project_id, question, general_turns, timings)
     with _stage(timings, "answer"):
         result = _reserved_call(
             conn, project_id,
@@ -482,11 +510,17 @@ def _answer(
     search_query: str | None = None,
 ) -> Answer:
     timings = {} if timings is None else timings
-    with _stage(timings, "retrieve"):
-        evidence = retrieve_evidence(conn, project_id, dataset_id, search_query or question, document_ids, limit=ANSWER_CONTEXT_DOCS)
+    try:
+        with _stage(timings, "retrieve"):
+            evidence = retrieve_evidence(conn, project_id, dataset_id, search_query or question, document_ids, limit=ANSWER_CONTEXT_DOCS)
+    except (dify.DifyError, httpx.HTTPError):
+        # 접속 실패와 검색 결과 0건은 구분한다. 원격 오류 본문에는 비밀값이 있을 수 있어 기록하지 않는다.
+        logger.warning("project=%s 자료 검색 서비스를 불러오지 못했습니다", project_id)
+        return Answer.abstain("자료 검색 서비스를 불러오지 못해 답변하지 못했습니다. 자료 부족 여부는 확인되지 않았습니다.",
+                              errored=True, reason_code="retrieval_error")
     if not evidence:
         logger.warning("project=%s 답변 유보: 근거 없음", project_id)
-        return Answer.abstain("허용된 사업 자료에서 근거를 찾지 못했습니다")
+        return Answer.abstain("현재 검색된 자료에서 질문에 답할 근거를 찾지 못했습니다", reason_code="retrieval_empty")
 
     images = [e.image_path for e in evidence if e.is_visual][:MAX_IMAGES_PER_ANSWER]
     model_evidence = _with_full_text(conn, evidence)  # 화면에 돌려주는 근거(evidence)는 짧은 조각 그대로 둔다
@@ -509,6 +543,9 @@ def _answer(
     actual = llm.actual_cost_krw(ANSWER_MODEL, usage.prompt_tokens, usage.completion_tokens)
     budget.settle(conn, reservation_id, actual)  # §10 — 예약은 추정치, 정산은 실제 usage
 
+    require_project_access(conn, user_id, project_id, action="read")
+    item_results = [item.model_dump() for item in getattr(result, "item_results", [])]
+    reason_code = getattr(result, "reason_code", None)
     valid_asset_ids = {e.asset_id for e in evidence}
     if result.abstain or not result.cited_asset_ids or not set(result.cited_asset_ids) <= valid_asset_ids:
         # 허구 출처·전달하지 않은 이미지 인용을 거부한다(§4.2, §6).
@@ -517,7 +554,8 @@ def _answer(
                 "project=%s 허구/미전달 근거 인용 거부: cited=%s valid=%s",
                 project_id, result.cited_asset_ids, valid_asset_ids,
             )
-        return Answer.abstain(result.abstain_reason or "근거를 확인하지 못했습니다")
+        return replace(Answer.abstain(result.abstain_reason or "답변에 연결된 원문을 확인하지 못했습니다",
+                                      reason_code=reason_code or (None if result.abstain else "citation_error")), item_results=item_results)
 
     mismatch = _mismatch_reason(conn, project_id, question, result)
     if mismatch:
@@ -527,4 +565,13 @@ def _answer(
     require_project_access(conn, user_id, project_id, action="read")
 
     cited = [e for e in evidence if e.asset_id in result.cited_asset_ids]
-    return Answer(text=result.answer, evidence=cited, abstained=False)
+    # 근거 펼침에도 검색 조각 대신 서버가 복원한 실제 인용 원문을 보여 준다.
+    if item_results:
+        quotes: dict[int, list[str]] = {}
+        for item in item_results:
+            if item["status"] == "supported":
+                for source in item["sources"]:
+                    quotes.setdefault(source["asset_id"], []).extend(source["quotes"])
+        cited = [replace(e, content="\n".join(dict.fromkeys(quotes[e.asset_id]))) for e in cited if e.asset_id in quotes]
+    return Answer(text=result.answer, evidence=cited, abstained=False, abstain_reason=result.abstain_reason,
+                  partial=getattr(result, "partial", False), reason_code=reason_code, item_results=item_results)

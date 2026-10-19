@@ -299,7 +299,7 @@ def _item(**fields):
     return llm.ItemEvidenceCheck(**{
         "asked": "예시사업 / 청구 합계 / 2026-09", "found": "청구 합계 98,540,200원",
         "status": "supported", "answer": "청구 합계는 98,540,200원입니다.",
-        "sources": [{"asset_id": 1, "quotes": ["청구 합계는 98,540,200원"]}], "reason": "", **fields,
+        "sources": [{"asset_id": 1, "span_ids": ["a1:l1"]}], "reason": "", **fields,
     })
 
 
@@ -354,7 +354,7 @@ def test_the_check_rules_are_added_to_the_prompt_when_enabled(monkeypatch):
     llm.answer("질문", [], [], {})
 
     system = client.kwargs["messages"][0]["content"]
-    assert system.startswith(llm.ANSWER_SYSTEM_PROMPT) and "items" in system and "quotes" in system
+    assert system.startswith(llm.ANSWER_SYSTEM_PROMPT) and "items" in system and "span_ids" in system
     assert "abstain=true" not in system  # 존재하지 않는 출력 필드를 요구하지 않는다
 
 
@@ -375,14 +375,15 @@ def test_an_empty_item_check_does_not_release_an_answer_even_if_supported(monkey
     assert result.abstain and result.answer == "" and result.cited_asset_ids == []
 
 
-def test_partial_match_blocks_all_answer_claims_and_preserves_the_missing_item_reason(monkeypatch):
+def test_partial_match_releases_supported_answer_and_keeps_missing_item_reason(monkeypatch):
     _checked_client(monkeypatch, [_item(), _item(asked="제외 범위", status="missing",
         reason="계약에서 제외한 작업은 확인되지 않습니다. 계약 범위 자료가 필요합니다.")])
 
     result, _usage = llm.answer("청구 합계와 제외 범위는?", [_evidence()], [], {})
 
-    assert result.abstain and result.evidence_quote == ""
-    assert "계약 범위 자료" in result.abstain_reason
+    assert not result.abstain and result.partial and result.evidence_quote
+    assert "청구 합계는 98,540,200원입니다." in result.answer
+    assert "계약 범위 자료" in result.answer and "계약 범위 자료" in result.abstain_reason
 
 
 def test_abstention_drops_stray_answer_and_citations(monkeypatch):
@@ -397,28 +398,28 @@ def test_abstention_drops_stray_answer_and_citations(monkeypatch):
 
 @pytest.mark.parametrize("sources", [
     [],
-    [{"asset_id": 99, "quotes": ["청구 합계는 98,540,200원"]}],
-    [{"asset_id": 1, "quotes": []}],
-    [{"asset_id": 1, "quotes": [" "]}],
-    [{"asset_id": 1, "quotes": ["|"]}],
-    [{"asset_id": 1, "quotes": ["청구 합계는 98,540,201원"]}],
-    [{"asset_id": 1, "quotes": ["청구 합계는 98,540,200달러"]}],
+    [{"asset_id": 99, "span_ids": ["a1:l1"]}],
+    [{"asset_id": 1, "span_ids": []}],
+    [{"asset_id": 1, "span_ids": [" "]}],
+    [{"asset_id": 1, "span_ids": ["a1:l999"]}],
+    [{"asset_id": 1, "span_ids": ["a2:l1"]}],
 ])
 def test_missing_fabricated_or_unprovided_sources_block_the_answer(monkeypatch, sources):
     _checked_client(monkeypatch, [_item(sources=sources)])
     result, _ = llm.answer("청구 합계는?", [_evidence()], [], {})
     assert result.abstain and not result.answer and not result.cited_asset_ids and not result.evidence_quote
+    assert result.reason_code == "citation_error"
 
 
-def test_quote_found_in_another_document_does_not_validate_the_cited_document(monkeypatch):
-    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 2, "quotes": ["청구 합계는 98,540,200원"]}])])
+def test_a_span_from_another_document_cannot_validate_the_cited_document(monkeypatch):
+    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 2, "span_ids": ["a1:l1"]}])])
     result, _ = llm.answer("청구 합계는?", [_evidence(), _evidence(2, "입금 내역 없음")], [], {})
-    assert result.abstain and "인용문" in result.abstain_reason
+    assert result.abstain and result.reason_code == "citation_error"
 
 
 def test_valid_items_are_composed_in_question_order_with_deduplicated_citations(monkeypatch):
     items = [_item(), _item(asked="확인 오류 건수", found="확인 오류 0건", answer="확인 오류는 0건입니다.",
-        sources=[{"asset_id": 1, "quotes": ["확인 오류 0건"]}])]
+        sources=[{"asset_id": 1, "span_ids": ["a1:l2"]}])]
     _checked_client(monkeypatch, items)
     result, _ = llm.answer("청구 합계와 오류 건수는?", [_evidence(text="청구 합계는 98,540,200원\n확인 오류 0건")], [], {})
     assert not result.abstain and result.cited_asset_ids == [1]
@@ -427,12 +428,12 @@ def test_valid_items_are_composed_in_question_order_with_deduplicated_citations(
 
 
 def test_table_headers_and_rows_can_be_separate_exact_spans(monkeypatch):
-    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 1, "quotes": ["회사: 예시회사", "항목 | 금액", "청구 합계 | 98,540,200원"]}])])
+    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 1, "span_ids": ["a1:l1", "a1:l3", "a1:l5"]}])])
     result, _ = llm.answer("청구 합계는?", [_evidence(text="회사: 예시회사\n\n항목 | 금액\n--- | ---\n청구 합계 | 98,540,200원")], [], {})
     assert not result.abstain
 
 
-def test_only_unicode_and_whitespace_differences_are_tolerated(monkeypatch):
+def test_server_quotes_preserve_unicode_and_original_whitespace(monkeypatch):
     import unicodedata
     _checked_client(monkeypatch, [_item()])
     text = unicodedata.normalize("NFD", "청구 합계는\r\n  98,540,200원")

@@ -34,7 +34,7 @@ def test_both_pipelines_keep_original_question_and_apply_exact_item_evidence(con
         seen["answer_input"] = kwargs["messages"][1]["content"][0]["text"]
         result = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
             asked="청구 합계", found="청구 합계 100원", status="supported", answer="청구 합계는 100원입니다.",
-            sources=[llm.ItemSource(asset_id=1, quotes=["청구 합계는 101원입니다." if fabricated else text])], reason="")])
+            sources=[llm.ItemSource(asset_id=1, span_ids=["a1:l999" if fabricated else "a1:l1"])], reason="")])
         assert kwargs["response_format"] is llm.CheckedAnswerResult
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=result))],
                                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=10))
@@ -49,7 +49,7 @@ def test_both_pipelines_keep_original_question_and_apply_exact_item_evidence(con
     assert result.kind == "document"
     assert {"retrieve", "answer"} <= result.timings.keys()
     if fabricated:
-        assert result.evidence == [] and "인용문" in result.abstain_reason
+        assert result.evidence == [] and result.reason_code == "citation_error"
 
 
 def _seed_project(conn, project_id=1, user_id=1, role="viewer"):
@@ -456,8 +456,8 @@ def test_returned_evidence_keeps_the_retrieved_chunk_for_display(conn, monkeypat
     assert [e.content for e in result.evidence] == ["머리글"]  # 근거 카드는 짧게 유지한다
 
 
-@pytest.mark.parametrize("quote, blocked", [("최종 청구액은 110원", False), ("최종 청구액은 120원", True)])
-def test_item_evidence_is_checked_against_the_full_model_context_without_an_extra_call(conn, monkeypatch, quote, blocked):
+@pytest.mark.parametrize("span_id, blocked", [("a1:l2", False), ("a1:l999", True)])
+def test_source_spans_are_resolved_from_full_context_without_an_extra_call(conn, monkeypatch, span_id, blocked):
     from types import SimpleNamespace
 
     _seed_project(conn)
@@ -472,8 +472,8 @@ def test_item_evidence_is_checked_against_the_full_model_context_without_an_extr
     def parse(**kwargs):
         calls.append(kwargs)
         parsed = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
-            asked="최종 청구액", found=quote, status="supported", answer=quote + "입니다.",
-            sources=[llm.ItemSource(asset_id=1, quotes=[quote])], reason="",
+            asked="최종 청구액", found="최종 청구액은 110원", status="supported", answer="최종 청구액은 110원입니다.",
+            sources=[llm.ItemSource(asset_id=1, span_ids=[span_id])], reason="",
         )])
         return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=30, completion_tokens=20),
             choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
@@ -485,9 +485,10 @@ def test_item_evidence_is_checked_against_the_full_model_context_without_an_extr
     assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'settled'").fetchone()[0] == 1
     if not blocked:
         assert result.text == "최종 청구액은 110원입니다."
-        assert [e.content for e in result.evidence] == ["머리글"]
+        assert [e.content for e in result.evidence] == ["최종 청구액은 110원"]
+        assert '<span id="a1:l2">최종 청구액은 110원</span>' in calls[0]["messages"][1]["content"][0]["text"]
     else:
-        assert "인용문" in result.abstain_reason
+        assert result.reason_code == "citation_error"
 
 
 def test_chunk_is_used_when_the_full_text_is_missing(conn, monkeypatch):

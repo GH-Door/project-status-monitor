@@ -9,7 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from psm import budget, llm, rag
+from psm import budget, llm, rag, web_evidence
+
+
+@pytest.fixture(autouse=True)
+def no_weather_provider(monkeypatch):
+    monkeypatch.setattr(llm.weather_evidence, "load", lambda *args: None)
+
 
 QUESTION_GENERAL = "엑셀에서 VLOOKUP은 어떻게 써?"
 
@@ -207,13 +213,13 @@ def routed(conn, monkeypatch):
         calls["web"].append({"question": question, "history": history})
         if state["web_error"]:
             raise RuntimeError("웹 검색 호출 실패")
-        return "웹 검색 답변입니다\n\n출처: 기상청 (https://www.weather.go.kr)", llm.Usage(50, 40)
+        return llm.WebResult("웹 검색 답변입니다", [("기상청", "https://www.weather.go.kr")], verified=True), llm.Usage(50, 40)
 
     def retrieve(*args, **kwargs):
         calls["retrieve"] += 1
         return []
 
-    monkeypatch.setattr(rag.llm, "answer_web", web)
+    monkeypatch.setattr(rag.llm, "answer_web_with_sources", web)
     monkeypatch.setattr(rag.llm, "classify_question", classify)
     monkeypatch.setattr(rag.llm, "answer_general", general)
     monkeypatch.setattr(rag.dify, "retrieve", retrieve)
@@ -367,12 +373,36 @@ class _ResponsesClient:
         annotations = [SimpleNamespace(type="url_citation", url=u, title=t) for u, t in citations]
         self.response = SimpleNamespace(
             output_text=text, usage=SimpleNamespace(input_tokens=8000, output_tokens=60),
-            output=[SimpleNamespace(type="web_search_call"), SimpleNamespace(type="message", content=[SimpleNamespace(annotations=annotations)])])
+            output=[SimpleNamespace(type="web_search_call", status="completed", action=SimpleNamespace(type="search", queries=["검색어"], sources=[])), SimpleNamespace(type="message", content=[SimpleNamespace(annotations=annotations)])])
         self.kwargs, self.responses = None, self
+        self.chat = self.completions = self
+        self.read_pages = []
 
     def create(self, **kwargs):
         self.kwargs = kwargs
         return self.response
+
+    def parse(self, **kwargs):
+        cleaned = llm._INLINE_CITATION.sub("", llm._clean_url(self.response.output_text))
+        sources = [llm.ItemSource(asset_id=i, span_ids=[f"a{i}:l{line}" for line in range(1, len(self.response.output_text.splitlines()) + 2)])
+                   for i in range(1, len(self.read_pages) + 1)]
+        review = web_evidence.WebReview(items=[web_evidence.WebItem(
+            asked="질문 항목", found=cleaned, status="supported", answer=cleaned, sources=sources,
+            reason="", scope_matches=True, time_matches=True)])
+        return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=10, completion_tokens=20),
+                               choices=[SimpleNamespace(message=SimpleNamespace(parsed=review))])
+
+
+@pytest.fixture(autouse=True)
+def _fake_web_pages(monkeypatch):
+    """이 파일의 LLM 포맷 테스트도 실제 웹 원문을 읽지 않는다."""
+    def read(title, url):
+        import re
+        client = llm._client()
+        stamp = re.search(r"20\d{2}-\d{2}-\d{2}", client.kwargs["instructions"])[0]
+        client.read_pages.append(url)
+        return web_evidence.WebPage(title, url, f"{stamp}\n{client.response.output_text}")
+    monkeypatch.setattr(web_evidence, "read_page", read)
 
 
 def test_the_classifier_can_route_to_web_and_is_told_what_web_means(monkeypatch):
@@ -399,15 +429,15 @@ def test_answer_web_searches_the_web_and_appends_deduplicated_sources(monkeypatc
     assert "제목·주소·광고" in client.kwargs["instructions"]  # 검색 결과의 잡음을 옮겨 쓰지 않게(실측: 답 끝에 엉뚱한 주소가 붙은 적이 있다)
     assert text.startswith("부천시는 흐리고 20도입니다.")
     assert text.count("https://www.weather.go.kr/a") == 1 and "네이버 날씨 (https://m.naver.com/w)" in text  # 같은 출처는 한 번만
-    assert usage == llm.Usage(8000, 60)
+    assert usage == llm.Usage(8010, 80, 1)
 
 
-def test_answer_web_without_citations_adds_no_source_line(monkeypatch):
+def test_answer_web_without_sources_does_not_publish_the_unverified_answer(monkeypatch):
     monkeypatch.setattr(llm, "_client", lambda: _ResponsesClient("답입니다."))
 
     text, _usage = llm.answer_web(QUESTION_WEB, [])
 
-    assert text == "답입니다." and "출처" not in text
+    assert text == ""
 
 
 def test_a_web_verdict_gets_a_web_answer_without_touching_documents(conn, routed):
@@ -420,13 +450,14 @@ def test_a_web_verdict_gets_a_web_answer_without_touching_documents(conn, routed
     assert routed.calls["retrieve"] == 0 and routed.calls["general"] == [] and routed.calls["web"][0]["question"] == QUESTION_WEB
 
 
-def test_when_web_search_fails_the_answer_falls_back_to_the_plain_general_answer(conn, routed):
+def test_web_search_failure_never_falls_back_to_stale_general_knowledge(conn, routed):
     routed.state["kind"], routed.state["web_error"] = "web", True
 
     answer = _ask(conn, QUESTION_WEB)
 
-    assert answer.kind == "general" and answer.text == "일반 답변입니다"  # 문서 경로로 새지도, 오류로 끝나지도 않는다
-    assert routed.calls["retrieve"] == 0
+    assert answer.kind == "web" and answer.abstained and answer.errored
+    assert answer.reason_code == "web_search_error"
+    assert routed.calls["retrieve"] == 0 and routed.calls["general"] == []
 
 
 def test_web_answers_never_see_document_turns(conn, routed):
@@ -567,6 +598,6 @@ def test_answer_web_with_sources_returns_the_body_and_the_sources_separately(mon
     result, usage = llm.answer_web_with_sources("부천 날씨", [])
 
     assert result.text == "기온은 19도입니다." and result.sources == [("부천 날씨", "https://k.kr/w")]
-    assert usage == llm.Usage(8000, 60)
+    assert usage == llm.Usage(8010, 80, 1)
     assert llm.format_web_answer(result) == "기온은 19도입니다.\n\n출처:\n- 부천 날씨 (https://k.kr/w)"
     assert llm.format_web_answer(llm.WebResult("출처 없는 글", [])) == "출처 없는 글"

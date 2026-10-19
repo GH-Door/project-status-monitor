@@ -11,7 +11,7 @@ import sqlite3
 from psm.config import HISTORY_MAX_CHARS, HISTORY_MAX_TURNS
 
 TITLE_CHARS = 30
-_ABSTAINED_NOTE = "(근거를 찾지 못해 답변을 유보함)"
+_ABSTAINED_NOTE = "(이전 항목은 답변 유보. 자료 부족인지 기술적인 확인 실패인지는 다시 확인해야 함)"
 
 
 class ConversationNotFoundError(Exception):
@@ -48,12 +48,14 @@ def add_message(
     abstained: bool = False,
     abstain_reason: str | None = None,
     kind: str = "document",
+    answer_meta: dict | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO messages (conversation_id, role, content, rewritten_query, evidence_json, "
-        "abstained, abstain_reason, kind) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "abstained, abstain_reason, kind, answer_meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (conversation_id, role, content, rewritten_query,
-         json.dumps(evidence or [], ensure_ascii=False), int(abstained), abstain_reason, kind),
+         json.dumps(evidence or [], ensure_ascii=False), int(abstained), abstain_reason, kind,
+         json.dumps(answer_meta or {}, ensure_ascii=False)),
     )
     conn.execute(
         "UPDATE conversations SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
@@ -73,6 +75,11 @@ def get(conn: sqlite3.Connection, conversation_id: int, user_id: int, project_id
             "abstained": bool(m["abstained"]),
             "abstain_reason": m["abstain_reason"],
             "kind": m["kind"],
+            "partial": json.loads(m["answer_meta_json"]).get("partial", False),
+            "reason_code": json.loads(m["answer_meta_json"]).get("reason_code"),
+            "item_results": json.loads(m["answer_meta_json"]).get("item_results", []),
+            "prompt_version": json.loads(m["answer_meta_json"]).get("prompt_version"),
+            "web_verification": json.loads(m["answer_meta_json"]).get("web_verification", {}),
         }
         for m in conn.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conversation_id,))
     ]
@@ -101,13 +108,23 @@ def history(conn: sqlite3.Connection, conversation_id: int) -> list[dict]:
     호출 전에 소유자 확인(get/_owned)을 마친 대화에만 쓴다.
     """
     rows = conn.execute(
-        "SELECT role, content, abstained, kind FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+        "SELECT role, content, abstained, abstain_reason, kind, answer_meta_json FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
         (conversation_id, HISTORY_MAX_TURNS * 2),
     ).fetchall()
     turns: list[dict] = []
     budget = HISTORY_MAX_CHARS
     for row in rows:  # 최신부터 담는다
-        content = row["content"] or (_ABSTAINED_NOTE if row["abstained"] else "")
+        content = row["content"]
+        meta = json.loads(row["answer_meta_json"])
+        if meta.get("item_results"):
+            # 기술적 실패를 자료 부족으로 바꾸지 않고, 검증되지 않은 생성 답변도 전달하지 않는다.
+            content = "\n".join(
+                item["answer"] if item["status"] == "supported" else
+                f"({item['asked']}: {item['reason']} 이번 자료에서 다시 확인 필요)"
+                for item in meta["item_results"]
+            )
+        elif row["abstained"] and not content:
+            content = f"(이전 답변 유보 사유: {row['abstain_reason']})" if row["abstain_reason"] else _ABSTAINED_NOTE
         if budget <= 0:
             break
         content = content[:budget]

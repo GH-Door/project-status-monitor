@@ -31,7 +31,7 @@ def piped(conn, monkeypatch):
     monkeypatch.setattr(rag, "ANSWER_PIPELINE", "planner")
     calls = {"plan": [], "web": [], "retrieve": [], "rewrite": 0, "classify": 0}
     state = {"plan": Plan("document", query="독립 질문"), "plan_error": False, "web_error": False,
-             "web": llm.WebResult("흐리고 19도입니다", [("부천 날씨", "https://w.kr/a")])}
+             "web": llm.WebResult("흐리고 19도입니다", [("부천 날씨", "https://w.kr/a")], verified=True)}
 
     def plan(question, history, context, **kwargs):
         calls["plan"].append({"question": question, "history": history, "context": context})
@@ -103,7 +103,7 @@ def test_a_web_answer_without_any_source_is_not_given(conn, piped):
 
     answer = _ask(conn)
 
-    assert answer.abstained and not answer.errored and answer.kind == "document"
+    assert answer.abstained and not answer.errored and answer.kind == "web"
     assert "출처" in answer.abstain_reason and answer.text == ""  # 출처 없는 웹 답은 내지 않는다(최소 조건)
 
 
@@ -197,7 +197,7 @@ def test_the_web_call_uses_the_web_model_and_is_billed_at_its_price(conn, piped,
     """웹 답변은 질문 분류·문서 답변과 다른 모델을 쓸 수 있다(실측: gpt-4.1-mini는 웹 답에 출처 인용을 거의 안 단다). 요금은 그 모델 단가로 정산한다."""
     piped.state["plan"] = Plan("web", web_query="오늘 환율")
     seen = {}
-    monkeypatch.setattr("psm.answering.WEB_MODEL", "gpt-4.1")
+    monkeypatch.setattr("psm.rag.WEB_MODEL", "gpt-4.1")
     monkeypatch.setattr(rag.llm, "answer_web_with_sources", lambda q, h, **kw: seen.update(kw) or (piped.state["web"], llm.Usage(1000, 100)))
     billed = []
     monkeypatch.setattr(rag.llm, "actual_cost_krw", lambda model, prompt, completion: billed.append(model) or 1.0)

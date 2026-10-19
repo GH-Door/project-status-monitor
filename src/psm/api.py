@@ -430,6 +430,10 @@ def ask(body: AskBody) -> dict:
             body.document_ids or None, history=prior,
         )
         evidence = [_evidence_json(e) for e in answer.evidence]
+        if answer.item_results:
+            # 서버가 선택한 실제 인용문은 600자에서 잘라 일부를 숨기지 않는다.
+            for rendered, original in zip(evidence, answer.evidence):
+                rendered["content"] = original.content
         conversation_id = None if answer.errored else _save_turn(conn, user_id, project["id"], body, answer, evidence)
     return {
         "answer": answer.text,
@@ -440,6 +444,11 @@ def ask(body: AskBody) -> dict:
         "evidence": evidence,
         "conversation_id": conversation_id,
         "rewritten_query": answer.rewritten_query,
+        "partial": answer.partial,
+        "reason_code": answer.reason_code,
+        "item_results": answer.item_results,
+        "prompt_version": answer.web_verification.get("version", llm.ANSWER_PROMPT_VERSION),
+        "web_verification": answer.web_verification,
     }
 
 
@@ -450,6 +459,10 @@ def _save_turn(conn: sqlite3.Connection, user_id: int, project_id: int, body: As
     conversations.add_message(
         conn, conversation_id, "assistant", answer.text, rewritten_query=answer.rewritten_query,
         evidence=evidence, abstained=answer.abstained, abstain_reason=answer.abstain_reason, kind=answer.kind,
+        answer_meta={"partial": answer.partial, "reason_code": answer.reason_code,
+                     "item_results": answer.item_results,
+                     "prompt_version": answer.web_verification.get("version", llm.ANSWER_PROMPT_VERSION),
+                     "web_verification": answer.web_verification},
     )
     return conversation_id
 
@@ -591,6 +604,8 @@ def get_settings() -> dict:
         "budget": {"limit_krw": BUDGET_LIMIT_KRW, "used_ratio": round(used, 4)},
         "rag_dir": str(RAG_DOCS_DIR),
         "answer_model": ANSWER_MODEL,
+        "answer_prompt_version": llm.ANSWER_PROMPT_VERSION,
+        "web_verification_version": llm.web_evidence.VERSION,
         "company_name": project["name"] if project else None,
     }
 

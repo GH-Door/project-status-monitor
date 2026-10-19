@@ -135,6 +135,63 @@ def test_ask_abstains_when_nothing_found(client, tmp_path, monkeypatch):
     body = client.post("/api/ask", json={"question": "영업이익은?"}).json()
 
     assert body["abstained"] is True and body["answer"] == "" and body["abstain_reason"]
+    assert body["reason_code"] == "retrieval_empty"
+
+
+def test_web_verification_metadata_survives_conversation_reload(client, tmp_path, monkeypatch):
+    from psm import rag, web_evidence
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    meta = {"version": web_evidence.VERSION, "search_calls": 1,
+            "attempts": [{"outcome": "verified", "search_calls": [{"queries": ["대구 중구 날씨"]}]}]}
+    monkeypatch.setattr(rag, "answer_question", lambda *a, **k: rag.Answer(
+        text="2026-10-19 대구 중구 예보입니다.", evidence=[], abstained=False, kind="web", web_verification=meta))
+    body = client.post("/api/ask", json={"question": "대구 중구 오늘 날씨"}).json()
+    restored = client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"][-1]
+    assert restored["web_verification"] == body["web_verification"] == meta
+    assert body["prompt_version"] == restored["prompt_version"] == web_evidence.VERSION
+
+
+@pytest.mark.parametrize("failure", ["missing", "citation_error"])
+def test_partial_answer_and_server_quotes_survive_reopening_conversation(client, tmp_path, monkeypatch, failure):
+    _synced(client, tmp_path)
+    sales = next(d for d in client.get("/api/documents").json() if "매출보고서" in d["filename"])
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    monkeypatch.setattr(dify, "retrieve", lambda ds, query, top_k, document_names=None:
+        [{"document_name": document_names[0], "content": "짧은 검색 조각", "score": 0.9}])
+
+    def answer(question, evidence, images, official, history=None):
+        aid = evidence[0].asset_id
+        items = [llm.ItemEvidenceCheck(asked="9월 순매출", found="순매출 39,350,000원", status="supported",
+            answer="9월 순매출은 39,350,000원입니다.", reason="",
+            sources=[llm.ItemSource(asset_id=aid, span_ids=[f"a{aid}:l1"])]),
+            llm.ItemEvidenceCheck(asked="입금액", found="미확인", status="missing" if failure == "missing" else "supported",
+                answer="내보내면 안 되는 답", reason="입금 내역이 필요합니다.",
+                sources=[llm.ItemSource(asset_id=aid, span_ids=[f"a{aid}:l999"])])]
+        return llm.CheckedAnswerResult(items=items).to_answer(evidence), llm.Usage(1, 1)
+
+    monkeypatch.setattr(llm, "answer", answer)
+    body = client.post("/api/ask", json={"question":"9월 순매출과 입금액은?", "document_ids":[sales["id"]]}).json()
+    assert body["partial"] and not body["abstained"]
+    assert body["reason_code"] == failure and body["item_results"][1]["status"] == failure
+    assert "내보내면 안 되는 답" not in str(body)
+    assert body["evidence"][0]["content"] == SALES  # 검색 조각이 아니라 서버 원문
+    restored = client.get(f"/api/conversations/{body['conversation_id']}").json()["messages"][-1]
+    assert restored["content"] == body["answer"]
+    for key in ("partial", "reason_code", "item_results", "prompt_version", "evidence"):
+        assert restored[key] == body[key]
+
+
+def test_search_service_failure_is_not_reported_or_saved_as_missing_data(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key":"sk-test-0000"})
+    def broken(*args, **kwargs):
+        raise dify.DifyError("remote error body should not be exposed")
+    monkeypatch.setattr(dify, "retrieve", broken)
+    body = client.post("/api/ask", json={"question":"순매출은?"}).json()
+    assert body["errored"] and body["reason_code"] == "retrieval_error"
+    assert "불러오지 못해" in body["abstain_reason"] and "remote error" not in str(body)
+    assert body["conversation_id"] is None
 
 
 def test_ask_before_any_company_is_a_clear_404(client):

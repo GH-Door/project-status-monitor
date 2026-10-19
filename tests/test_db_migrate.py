@@ -111,4 +111,7 @@ def test_old_messages_table_gains_the_kind_column_and_keeps_its_rows():
     init_db(conn)
 
     assert "kind" in _columns(conn, "messages")
+    assert "answer_meta_json" in _columns(conn, "messages")
+    assert conn.execute("SELECT answer_meta_json FROM messages").fetchone()[0] == "{}"
+    assert conn.execute("SELECT content FROM messages").fetchone()[0] == "옛 질문"
     assert conn.execute("SELECT kind FROM messages").fetchone()["kind"] == "document"  # 옛 대화는 문서 대화로 남는다

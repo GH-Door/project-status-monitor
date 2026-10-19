@@ -13,10 +13,6 @@ from psm import llm, llm_responses, rag
 from psm.config import (
     ANSWER_MODEL,
     GENERAL_MAX_OUTPUT_TOKENS,
-    USD_TO_KRW,
-    WEB_MODEL,
-    WEB_SEARCH_FEE_USD,
-    WEB_SEARCH_INPUT_CHARS_ESTIMATE,
 )
 from psm.logging_config import get_logger
 from psm.planner import CompanyContext, Plan
@@ -52,16 +48,7 @@ def _plan(conn: sqlite3.Connection, project_id: int, question: str, history: lis
 
 
 def _web(conn: sqlite3.Connection, project_id: int, query: str, timings: dict[str, float]) -> rag.Answer:
-    estimated = llm.estimate_cost_krw(WEB_MODEL, input_chars=len(query) + WEB_SEARCH_INPUT_CHARS_ESTIMATE, expected_output_tokens=GENERAL_MAX_OUTPUT_TOKENS)
-    with rag._stage(timings, "web"):
-        result = rag._reserved_call(
-            conn, project_id, estimated, lambda: llm.answer_web_with_sources(query, [], model=WEB_MODEL),  # 대화 없이 독립 질문만 보낸다
-            "웹 검색 답변 생성 실패", extra_krw=round(WEB_SEARCH_FEE_USD * USD_TO_KRW, 2), model=WEB_MODEL)
-    if result is None:
-        return rag.Answer.abstain(_WEB_FAILED, errored=True)  # 시간이 중요한 질문을 옛 지식으로 답하지 않는다
-    if not result.sources or not result.text:
-        return rag.Answer.abstain(_WEB_NO_SOURCE)  # 출처 없는 웹 답은 내지 않는다(최소 조건 — 정확성의 증명은 아니다)
-    return rag.Answer(text=llm.format_web_answer(result), evidence=[], abstained=False, kind="web")
+    return rag.verified_web_answer(conn, project_id, query, [], timings)
 
 
 def answer(
