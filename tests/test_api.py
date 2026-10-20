@@ -3,38 +3,13 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from psm import api, dify, ingest, kpi, library, llm
+from psm import api, conversations, dify, kpi, library, llm, rag
 
 SALES = "9월 순매출은 39,350,000원이다. 목표 30,000,000원 대비 높다. 달성률은 131.17%다."
 SCHEDULE = (
     "| ID | 업무 | 담당 | 일정 | 상태 |\n|---|---|---|---|---|\n"
     "| L01 | 소프트런칭 | 가 | 09-14 | 완료 |\n| L08 | 정식 출시 | 나 | 10-12 | 확정 |\n"
 )
-
-
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(api, "DB_PATH", tmp_path / "app.db")
-    monkeypatch.setattr(api, "UPLOAD_DIR", tmp_path / "uploads")
-    monkeypatch.setattr(api, "RAG_DOCS_DIR", tmp_path / "RAG_문서")
-    monkeypatch.setattr(ingest, "ORIGINALS_DIR", tmp_path / "originals")
-    monkeypatch.setattr(llm, "OPENAI_API_KEY", "")
-    monkeypatch.setattr(library, "COMPANY_NAME", "")
-    llm.set_runtime_api_key(None)
-    counter = {"n": 0}
-
-    def _create_dataset(name):
-        counter["n"] += 1
-        return f"ds-{counter['n']}"
-
-    monkeypatch.setattr(dify, "create_dataset", _create_dataset)
-    monkeypatch.setattr(dify, "add_text_document", lambda ds, asset_id, text: f"d-{asset_id}")
-    # 문서별 지표(LLM) 추출은 기본적으로 건너뛴 것으로 둔다 — 필요한 테스트가 직접 바꾼다
-    monkeypatch.setattr(kpi, "extract_and_save", lambda *a, **k: kpi.ExtractResult())
-    (tmp_path / "RAG_문서").mkdir()
-    with TestClient(api.app, headers={api.CSRF_HEADER: api.CSRF_VALUE}) as test_client:
-        yield test_client
-    llm.set_runtime_api_key(None)
 
 
 def _seed_folder(tmp_path):
@@ -125,6 +100,29 @@ def test_ask_returns_answer_with_evidence_and_passes_selected_documents(client, 
     assert body["abstained"] is False and "39,350,000" in body["answer"]
     assert body["evidence"][0]["document_name"] == "04_2026년09월_매출보고서.md"
     assert len(seen["names"]) == 1  # 선택한 문서의 자산만 Dify에 전달
+    assert body["scope"] == ["04_2026년09월_매출보고서.md"]  # 화면이 "선택한 문서만 보고 답했어요"를 보여 줄 수 있게 선택한 파일 이름을 돌려준다
+
+
+def test_ask_reports_an_empty_scope_when_no_document_was_selected(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    monkeypatch.setattr(dify, "retrieve", lambda *a, **k: [])
+
+    body = client.post("/api/ask", json={"question": "영업이익은?"}).json()
+
+    assert body["scope"] == []
+
+
+def test_ask_with_a_selection_that_finds_nothing_still_reports_the_scope(client, tmp_path, monkeypatch):
+    """선택한 문서 안에서 못 찾은 것과 회사 전체에서 못 찾은 것은 다르다 — 화면이 구분해서 알려야 한다."""
+    _synced(client, tmp_path)
+    sales = next(d for d in client.get("/api/documents").json() if "매출보고서" in d["filename"])
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    monkeypatch.setattr(dify, "retrieve", lambda *a, **k: [])
+
+    body = client.post("/api/ask", json={"question": "납품 온도 기준은?", "document_ids": [sales["id"]]}).json()
+
+    assert body["abstained"] is True and body["scope"] == [sales["filename"]]
 
 
 def test_ask_abstains_when_nothing_found(client, tmp_path, monkeypatch):
@@ -590,3 +588,169 @@ def test_company_reports_whether_general_chat_is_on_so_the_screen_does_not_overp
     on = client.get("/api/company").json()
 
     assert off["general_chat"] is False and on["general_chat"] is True
+
+
+def test_ask_returns_the_chart_for_the_screen_and_none_for_other_answers(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    view = {"form": "grouped", "group": {"title": "월별 폐기", "labels": ["2026-09"], "series": [{"name": "월별 폐기", "values": [90.0]}], "unit": "박스"}}
+    monkeypatch.setattr(rag, "answer_question", lambda *a, **k: rag.Answer(text="‘월별 폐기’ 차트예요.", evidence=[], abstained=False, kind="chart", chart=view))
+
+    body = client.post("/api/ask", json={"question": "폐기 박스 그래프"}).json()
+
+    assert body["kind"] == "chart" and body["chart"] == view
+    monkeypatch.setattr(rag, "answer_question", lambda *a, **k: rag.Answer(text="안녕하세요", evidence=[], abstained=False, kind="general"))
+    assert client.post("/api/ask", json={"question": "안녕"}).json()["chart"] is None
+
+
+def test_a_chart_answer_is_saved_with_the_conversation_and_comes_back_when_it_is_reopened(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    view = {"form": "grouped", "group": {"title": "월별 폐기", "labels": ["2026-09"], "series": [{"name": "월별 폐기", "values": [90.0]}], "unit": "박스"},
+            "spec": {"engine": "catalog", "form": "grouped", "refs": [{"id": "breakdown||월별폐기|박스"}], "request": "폐기 그래프"}}
+    monkeypatch.setattr(rag, "answer_question", lambda *a, **k: rag.Answer(text="‘월별 폐기’ 차트예요.", evidence=[], abstained=False, kind="chart", chart=view))
+
+    asked = client.post("/api/ask", json={"question": "폐기 그래프"}).json()
+    reopened = client.get(f"/api/conversations/{asked['conversation_id']}").json()
+
+    assert reopened["messages"][1]["kind"] == "chart" and reopened["messages"][1]["chart"] == view
+    assert reopened["messages"][0]["chart"] is None
+
+
+# --- 중단·수정: 요청 ID·대화 버전·원자적 저장 ---
+
+
+def _ask_env(client, tmp_path, monkeypatch):
+    """OpenAI·Dify 없이 답을 돌려주는 환경. calls에 모델 호출(질문·맥락)이 남는다."""
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    calls = []
+
+    def fake(conn, user_id, project_id, dataset_id, question, document_ids=None, history=None, last_chart=None):
+        calls.append({"question": question, "history": history})
+        return rag.Answer(text=f"답: {question}", evidence=[], abstained=False, kind="general")
+
+    monkeypatch.setattr(rag, "answer_question", fake)
+    return calls
+
+
+def test_the_ask_response_carries_the_turn_id_and_conversation_version_for_a_later_edit(client, tmp_path, monkeypatch):
+    _ask_env(client, tmp_path, monkeypatch)
+
+    body = client.post("/api/ask", json={"question": "첫 질문"}).json()
+    reopened = client.get(f"/api/conversations/{body['conversation_id']}").json()
+
+    assert body["turn_id"] == reopened["messages"][0]["id"] and body["conversation_version"] == reopened["version"]
+
+
+def test_editing_the_last_question_replaces_that_turn_and_leaves_it_out_of_the_model_context(client, tmp_path, monkeypatch):
+    calls = _ask_env(client, tmp_path, monkeypatch)
+    first = client.post("/api/ask", json={"question": "q1"}).json()
+    second = client.post("/api/ask", json={"question": "q2", "conversation_id": first["conversation_id"]}).json()
+
+    edited = client.post("/api/ask", json={
+        "question": "q2 수정", "conversation_id": first["conversation_id"],
+        "edit_turn_id": second["turn_id"], "conversation_version": second["conversation_version"]})
+
+    assert edited.status_code == 200
+    reopened = client.get(f"/api/conversations/{first['conversation_id']}").json()
+    assert [m["content"] for m in reopened["messages"]] == ["q1", "답: q1", "q2 수정", "답: q2 수정"]
+    assert [t["content"] for t in calls[-1]["history"]] == ["q1", "답: q1"]  # 바꿀 질문·답은 맥락에 없다
+
+
+def test_a_stale_edit_is_refused_before_any_model_call(client, tmp_path, monkeypatch):
+    calls = _ask_env(client, tmp_path, monkeypatch)
+    first = client.post("/api/ask", json={"question": "q1"}).json()
+    client.post("/api/ask", json={"question": "q2", "conversation_id": first["conversation_id"]})  # 다른 탭이 이어갔다
+    before = len(calls)
+
+    response = client.post("/api/ask", json={
+        "question": "q1 수정", "conversation_id": first["conversation_id"],
+        "edit_turn_id": first["turn_id"], "conversation_version": first["conversation_version"]})
+
+    assert response.status_code == 409 and len(calls) == before  # 비용을 쓰지 않고 거절
+    assert len(client.get(f"/api/conversations/{first['conversation_id']}").json()["messages"]) == 4
+
+
+def test_a_failed_answer_while_editing_keeps_the_old_turn(client, tmp_path, monkeypatch):
+    _ask_env(client, tmp_path, monkeypatch)
+    first = client.post("/api/ask", json={"question": "q1"}).json()
+    monkeypatch.setattr(rag, "answer_question", lambda *a, **k: rag.Answer.abstain("장애", errored=True))
+
+    body = client.post("/api/ask", json={
+        "question": "q1 수정", "conversation_id": first["conversation_id"],
+        "edit_turn_id": first["turn_id"], "conversation_version": first["conversation_version"]}).json()
+
+    assert body["errored"] is True
+    assert [m["content"] for m in client.get(f"/api/conversations/{first['conversation_id']}").json()["messages"]] == ["q1", "답: q1"]
+
+
+def test_a_request_cancelled_before_it_finishes_is_not_saved(client, tmp_path, monkeypatch):
+    _ask_env(client, tmp_path, monkeypatch)
+
+    cancel = client.post("/api/ask/cancel", json={"request_id": "r-1"}).json()
+    body = client.post("/api/ask", json={"question": "취소할 질문", "request_id": "r-1"}).json()
+
+    assert cancel == {"saved": False} and body["cancelled"] is True
+    assert client.get("/api/conversations").json() == []  # 대화도 질문도 남지 않았다
+
+
+def test_a_cancel_that_arrives_after_the_save_tells_the_screen_to_reload(client, tmp_path, monkeypatch):
+    _ask_env(client, tmp_path, monkeypatch)
+    body = client.post("/api/ask", json={"question": "이미 끝난 질문", "request_id": "r-2"}).json()
+
+    cancel = client.post("/api/ask/cancel", json={"request_id": "r-2"}).json()
+
+    assert cancel == {"saved": True} and body["conversation_id"]  # 저장됐다 — 화면이 대화를 다시 읽는다
+
+
+def test_a_failure_while_saving_leaves_neither_a_question_nor_an_empty_conversation(client, tmp_path, monkeypatch):
+    _ask_env(client, tmp_path, monkeypatch)
+    real, calls = conversations._insert_message, {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("디스크 오류")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conversations, "_insert_message", flaky)
+
+    with pytest.raises(RuntimeError):
+        client.post("/api/ask", json={"question": "저장하다 실패"})
+
+    assert client.get("/api/conversations").json() == []
+
+
+def test_the_ask_endpoint_gives_the_models_the_last_chart_of_the_conversation_for_a_follow_up(client, tmp_path, monkeypatch):
+    _synced(client, tmp_path)
+    client.put("/api/settings/api-key", json={"key": "sk-test-0000"})
+    seen = []
+    chart = {"form": "grouped", "spec": {"engine": "catalog", "form": "grouped", "refs": [{"id": "x"}]}}
+
+    def fake(conn, user_id, project_id, dataset_id, question, document_ids=None, history=None, last_chart=None):
+        seen.append(last_chart)
+        return rag.Answer(text="차트", evidence=[], abstained=False, kind="chart", chart=chart if len(seen) == 1 else None)
+
+    monkeypatch.setattr(rag, "answer_question", fake)
+    first = client.post("/api/ask", json={"question": "그래프"}).json()
+    client.post("/api/ask", json={"question": "파란색으로", "conversation_id": first["conversation_id"]})
+
+    assert seen == [None, chart]  # 첫 질문에는 없고, 이어 묻는 질문에는 직전 차트가 간다
+
+
+
+def test_editing_an_earlier_question_drops_the_later_turns_and_sends_no_older_context(client, tmp_path, monkeypatch):
+    calls = _ask_env(client, tmp_path, monkeypatch)
+    first = client.post("/api/ask", json={"question": "q1"}).json()
+    client.post("/api/ask", json={"question": "q2", "conversation_id": first["conversation_id"]})
+    third = client.post("/api/ask", json={"question": "q3", "conversation_id": first["conversation_id"]}).json()
+
+    edited = client.post("/api/ask", json={
+        "question": "q1 수정", "conversation_id": first["conversation_id"],
+        "edit_turn_id": first["turn_id"], "conversation_version": third["conversation_version"]})
+
+    assert edited.status_code == 200
+    reopened = client.get(f"/api/conversations/{first['conversation_id']}").json()
+    assert [m["content"] for m in reopened["messages"]] == ["q1 수정", "답: q1 수정"]  # 뒤의 대화는 함께 지워졌다
+    assert calls[-1]["history"] == []  # 지워질 대화는 모델에게 보내지 않는다

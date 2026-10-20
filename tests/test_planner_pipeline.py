@@ -97,14 +97,23 @@ def test_a_web_plan_searches_the_web_with_the_plan_query_alone_and_lists_the_sou
     assert piped.calls["retrieve"] == [] and "web" in answer.timings
 
 
-def test_a_web_answer_without_any_source_is_not_given(conn, piped):
+def test_a_web_answer_without_any_source_is_given_with_an_unverified_label(conn, piped):
     piped.state["plan"] = Plan("web", web_query="오늘 환율")
     piped.state["web"] = llm.WebResult("1,300원입니다", [])
 
     answer = _ask(conn)
 
-    assert answer.abstained and not answer.errored and answer.kind == "document"
-    assert "출처" in answer.abstain_reason and answer.text == ""  # 출처 없는 웹 답은 내지 않는다(최소 조건)
+    assert not answer.abstained and not answer.errored and answer.kind == "web"
+    assert answer.text.startswith("1,300원입니다") and "출처를 확인하지 못한 답" in answer.text  # 인용이 없다는 걸 숨기지 않는다
+
+
+def test_a_web_answer_with_no_text_is_still_not_given(conn, piped):
+    piped.state["plan"] = Plan("web", web_query="오늘 환율")
+    piped.state["web"] = llm.WebResult("", [])
+
+    answer = _ask(conn)
+
+    assert answer.abstained and not answer.errored and "출처" in answer.abstain_reason
 
 
 def test_a_failed_web_search_is_reported_as_an_error_not_answered_from_old_knowledge(conn, piped):
@@ -134,12 +143,16 @@ def test_a_direct_answer_that_reports_company_info_is_sent_to_documents_instead(
     assert answer.kind == "document" and piped.calls["retrieve"] == ["지난달 매출은?"]  # 모델이 쓴 답은 버린다
 
 
-def test_a_direct_answer_that_reports_time_sensitivity_is_sent_to_the_web_instead(conn, piped):
-    piped.state["plan"] = Plan("direct", answer="옛 지식으로 쓴 답", uses_company_info=False, time_sensitive=True)
+def test_a_direct_answer_is_kept_even_when_it_reports_time_sensitivity(conn, piped):
+    """시간 민감 플래그로 웹에 되돌리면 "왜 그렇게 답해?" 같은 설명 질문의 약 절반이 웹 검색으로 잘못 가 빈 답이 나왔다(2026-10-15 실측).
+    시간 민감한 사실 질문은 계획이 처음부터 search_web을 고른다(실측 24/24)."""
+    piped.state["plan"] = Plan("direct", answer="앞선 답은 지역을 임의로 골랐기 때문입니다.", uses_company_info=False, time_sensitive=True)
 
-    answer = _ask(conn, "올해 최저임금은?")
+    answer = _ask(conn, "아니 너 왜 그렇게 답해?", history=[{"role": "user", "content": "오늘 날씨는 어때", "kind": "web"},
+                                                           {"role": "assistant", "content": "당진은 맑아요", "kind": "web"}])
 
-    assert answer.kind == "web" and piped.calls["web"][0]["question"] == "올해 최저임금은?"
+    assert answer.kind == "general" and answer.text == "앞선 답은 지역을 임의로 골랐기 때문입니다."
+    assert piped.calls["web"] == []  # 설명이 웹 검색으로 되돌아가지 않는다
 
 
 def test_a_clarify_plan_asks_back_and_searches_nothing(conn, piped):
@@ -168,10 +181,34 @@ def test_a_both_plan_is_answered_from_documents_only_until_parallel_execution_is
     assert piped.calls["retrieve"] == ["우리 매출 증가율"] and piped.calls["web"] == [] and answer.kind == "document"
 
 
-def test_selecting_documents_skips_the_planner(conn, piped):
-    answer = _ask(conn, "질문", document_ids=[1])
+def test_selecting_documents_still_lets_the_planner_route_an_unrelated_question(conn, piped):
+    """문서를 골라도 "안녕하세요"·날씨 같은 질문이 문서 유보 문구("질문이 인사말로서 문서 내에 해당하는 답변 내용이 없습니다")로 끝나면 안 된다."""
+    piped.state["plan"] = Plan("direct", answer="안녕하세요! 무엇을 도와드릴까요?", uses_company_info=False, time_sensitive=False)
 
-    assert piped.calls["plan"] == [] and answer.kind == "document"
+    answer = _ask(conn, "안녕하세요", document_ids=[1])
+
+    assert len(piped.calls["plan"]) == 1 and answer.kind == "general" and answer.text.startswith("안녕하세요")
+    assert piped.calls["retrieve"] == []
+
+
+def test_the_planner_is_told_which_documents_the_user_selected(conn, piped):
+    _ask(conn, "질문", document_ids=[1])
+
+    assert piped.calls["plan"][0]["context"].selected_documents == ["002_월간보고.md"]
+
+
+def test_a_document_plan_with_a_selection_still_searches_only_the_selected_documents(conn, piped, monkeypatch):
+    seen = {}
+
+    def retrieve_evidence(conn_, project_id, dataset_id, question, document_ids=None, limit=5):
+        seen["document_ids"] = document_ids
+        return []
+
+    monkeypatch.setattr(rag, "retrieve_evidence", retrieve_evidence)
+
+    answer = _ask(conn, "지금 정산 담당자는 누구야?", document_ids=[1])
+
+    assert seen["document_ids"] == [1] and answer.abstained  # 문서 질문은 예전처럼 선택한 문서 안에서만 찾는다
 
 
 def test_with_the_planner_off_the_old_gates_still_run(conn, piped, monkeypatch):
@@ -205,3 +242,13 @@ def test_the_web_call_uses_the_web_model_and_is_billed_at_its_price(conn, piped,
     _ask(conn)
 
     assert seen["model"] == "gpt-4.1" and "gpt-4.1" in billed
+
+
+def test_the_place_the_user_named_is_passed_to_the_web_search(conn, piped, monkeypatch):
+    piped.state["plan"] = Plan("web", web_query="부천 오늘 날씨", web_place="부천")
+    seen = {}
+    monkeypatch.setattr(rag.llm, "answer_web_with_sources", lambda q, h, **kw: seen.update(kw) or (piped.state["web"], llm.Usage(1000, 100)))
+
+    _ask(conn, "부천")
+
+    assert seen["place"] == "부천"

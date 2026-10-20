@@ -30,6 +30,7 @@ from psm import (
     approvals,
     baseline,
     budget,
+    cancel,
     conversations,
     dashboard,
     dify,
@@ -116,6 +117,7 @@ _ERROR_STATUS: list[tuple[type[Exception], int]] = [
     (baseline.BaselineError, 400),
     (metrics.MetricNotFoundError, 404),
     (conversations.ConversationNotFoundError, 404),
+    (conversations.TurnConflictError, 409),
     (approvals.MilestoneNotFoundError, 404),
     (approvals.ConcurrentModificationError, 409),
     (approvals.AlreadyApprovedError, 409),
@@ -354,6 +356,9 @@ class AskBody(BaseModel):
     question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
     document_ids: list[int] = []
     conversation_id: int | None = None  # 없으면 새 대화. 이전 대화 내용은 서버가 저장한 것만 쓴다
+    request_id: Annotated[str, StringConstraints(min_length=1, max_length=64)] | None = None  # 화면이 만든 요청 번호 — 중단할 때 이 번호로 알린다
+    edit_turn_id: int | None = None  # 수정할 마지막 질문의 id. conversation_id·conversation_version과 함께 보낸다
+    conversation_version: int | None = None  # 화면이 마지막으로 읽은 대화 상태 번호. 그 사이 대화가 바뀌었으면 수정을 거절한다
 
 
 def _evidence_json(item) -> dict:
@@ -366,45 +371,71 @@ def _evidence_json(item) -> dict:
     }
 
 
+CANCELS = cancel.CancelRegistry()
+
+
+class CancelBody(BaseModel):
+    request_id: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
 @app.post("/api/ask")
 def ask(body: AskBody) -> dict:
     if not llm.api_key_status()["configured"]:
         raise HTTPException(400, "OpenAI API 키가 없습니다. 설정 탭에서 입력하거나 .env에 OPENAI_API_KEY를 넣으세요.")
+    if body.edit_turn_id is not None and body.conversation_id is None:
+        raise HTTPException(422, "수정할 대화를 알 수 없습니다")
     with _db() as (conn, user_id):
         project = _company(conn, user_id)
         if not project["dify_dataset_id"]:
             raise HTTPException(409, "아직 Dify 지식베이스가 연결되지 않았습니다. [폴더 동기화]를 먼저 하세요.")
-        prior = None
+        prior, last_chart = None, None
         if body.conversation_id is not None:
             conversations.get(conn, body.conversation_id, user_id, project["id"])  # 소유자·사업 확인
-            prior = conversations.history(conn, body.conversation_id)
+            if body.edit_turn_id is not None:
+                conversations.check_editable(conn, body.conversation_id, body.edit_turn_id, body.conversation_version)  # 모델을 부르기 전에 거절
+            prior = conversations.history(conn, body.conversation_id, before_message_id=body.edit_turn_id)  # 바꿀 턴은 맥락에서 뺀다
+            last_chart = conversations.last_chart(conn, body.conversation_id, before_message_id=body.edit_turn_id)  # "색 바꿔줘" 같은 후속이 이어 쓸 직전 차트
         answer = rag.answer_question(
             conn, user_id, project["id"], project["dify_dataset_id"], body.question,
-            body.document_ids or None, history=prior,
+            body.document_ids or None, history=prior, last_chart=last_chart,
         )
         evidence = [_evidence_json(e) for e in answer.evidence]
-        conversation_id = None if answer.errored else _save_turn(conn, user_id, project["id"], body, answer, evidence)
+        scope = rag._selected_document_names(conn, project["id"], body.document_ids) if body.document_ids else []
+        saved: dict = {}
+        if not answer.errored:  # 장애로 못 답한 턴은 저장하지 않는다(수정 중이면 기존 턴이 남는다)
+            key = f"{user_id}:{body.request_id}" if body.request_id else None
+            if not CANCELS.run_unless_cancelled(key, lambda: saved.update(_save_turn(conn, user_id, project["id"], body, answer, evidence))):
+                return {"cancelled": True}  # 화면에서 중단했다 — 저장하지 않았다
     return {
         "answer": answer.text,
         "abstained": answer.abstained,
         "abstain_reason": answer.abstain_reason,
         "errored": answer.errored,
         "kind": answer.kind,
+        "chart": answer.chart,  # kind가 "chart"일 때 화면이 그릴 위젯과 스펙. 대화에 함께 저장돼 다시 열어도 복원된다
+        "scope": scope,  # 사용자가 고른 문서 이름(고르지 않았으면 빈 목록). 저장된 대화에는 남기지 않는다
         "evidence": evidence,
-        "conversation_id": conversation_id,
+        "conversation_id": saved.get("conversation_id"),
+        "turn_id": saved.get("turn_id"),  # 이 질문의 id — 나중에 "수정"할 때 보낸다
+        "conversation_version": saved.get("version"),
         "rewritten_query": answer.rewritten_query,
     }
 
 
-def _save_turn(conn: sqlite3.Connection, user_id: int, project_id: int, body: AskBody, answer, evidence: list[dict]) -> int:
-    """질문·답을 대화에 저장한다. 장애로 못 답한 턴은 저장하지 않아 다시 물어도 맥락이 오염되지 않는다."""
-    conversation_id = body.conversation_id or conversations.create(conn, project_id, user_id, body.question)
-    conversations.add_message(conn, conversation_id, "user", body.question, kind=answer.kind)
-    conversations.add_message(
-        conn, conversation_id, "assistant", answer.text, rewritten_query=answer.rewritten_query,
-        evidence=evidence, abstained=answer.abstained, abstain_reason=answer.abstain_reason, kind=answer.kind,
-    )
-    return conversation_id
+@app.post("/api/ask/cancel")
+def cancel_ask(body: CancelBody) -> dict:
+    """진행 중인 질문을 중단한다. 이미 저장된 뒤라면 saved=true — 화면이 대화를 다시 읽어야 한다."""
+    with _db() as (_conn, user_id):
+        return {"saved": not CANCELS.cancel(f"{user_id}:{body.request_id}")}
+
+
+def _save_turn(conn: sqlite3.Connection, user_id: int, project_id: int, body: AskBody, answer, evidence: list[dict]) -> dict:
+    """질문·답을 한 트랜잭션으로 저장한다(수정이면 기존 턴을 바꾼다). 중간에 실패하면 질문만 남지 않는다."""
+    return conversations.add_turn(
+        conn, body.conversation_id, body.question,
+        {"content": answer.text, "rewritten_query": answer.rewritten_query, "evidence": evidence, "abstained": answer.abstained,
+         "abstain_reason": answer.abstain_reason, "kind": answer.kind, "chart": answer.chart},
+        replace_turn_id=body.edit_turn_id, expected_version=body.conversation_version, project_id=project_id, user_id=user_id)
 
 
 @app.get("/api/conversations")

@@ -113,3 +113,187 @@ def test_history_for_the_model_carries_each_turn_kind(seeded):
     turns = conversations.history(seeded, conv_id)
 
     assert [t["kind"] for t in turns] == ["document", "document", "general", "general"]
+
+
+# --- 차트 상태: 답과 함께 저장해 다시 열어도 같은 차트가 나온다 ---
+
+CHART = {"form": "grouped", "group": {"title": "월별 폐기", "labels": ["2026-09"], "series": [{"name": "월별 폐기", "values": [90.0]}], "unit": "박스"},
+         "spec": {"refs": [{"id": "breakdown||월별폐기|박스"}], "form": "grouped", "engine": "catalog"}}
+
+
+def test_a_chart_answer_is_restored_with_its_chart_when_the_conversation_is_reopened(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "그래프")
+    conversations.add_message(seeded, conv_id, "user", "월별 폐기 그래프", kind="chart")
+    conversations.add_message(seeded, conv_id, "assistant", "‘월별 폐기’ 차트예요", kind="chart", chart=CHART)
+
+    messages = conversations.get(seeded, conv_id, 1, 1)["messages"]
+
+    assert messages[1]["chart"] == CHART and messages[0]["chart"] is None  # 질문·차트 없는 답에는 없다
+
+
+def test_the_last_saved_chart_spec_is_available_for_a_follow_up_edit(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "그래프")
+    conversations.add_message(seeded, conv_id, "assistant", "차트", kind="chart", chart=CHART)
+    conversations.add_message(seeded, conv_id, "assistant", "안녕", kind="general")
+
+    assert conversations.last_chart(seeded, conv_id) == CHART  # 사이에 다른 답이 있어도 가장 최근 차트
+    assert conversations.last_chart(seeded, conversations.create(seeded, 1, 1, "빈 대화")) is None
+
+
+# --- 한 턴(질문+답)은 한 트랜잭션: 중간에 실패해도 질문만 남지 않는다 ---
+
+ANSWER = {"content": "답입니다", "kind": "document"}
+
+
+def _count(conn, conv_id):
+    return conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (conv_id,)).fetchone()[0]
+
+
+def test_a_turn_saved_with_add_turn_returns_its_ids_for_a_later_edit(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "첫 질문")
+
+    saved = conversations.add_turn(seeded, conv_id, "첫 질문", ANSWER)
+
+    messages = conversations.get(seeded, conv_id, 1, 1)
+    assert [m["role"] for m in messages["messages"]] == ["user", "assistant"]
+    assert saved == {"conversation_id": conv_id, "turn_id": messages["messages"][0]["id"], "version": messages["version"]}
+
+
+def test_a_failure_while_saving_the_answer_leaves_no_orphan_question(seeded, monkeypatch):
+    conv_id = conversations.create(seeded, 1, 1, "첫 질문")
+    real = conversations._insert_message
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:  # 질문은 들어갔고 답을 넣다가 장애
+            raise RuntimeError("디스크 오류")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conversations, "_insert_message", flaky)
+
+    with pytest.raises(RuntimeError):
+        conversations.add_turn(seeded, conv_id, "첫 질문", ANSWER)
+
+    assert _count(seeded, conv_id) == 0  # 질문만 남는 일이 없다
+
+
+def test_editing_the_last_turn_replaces_it_and_keeps_earlier_turns(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "q1")
+    conversations.add_turn(seeded, conv_id, "q1", {"content": "a1"})
+    last = conversations.add_turn(seeded, conv_id, "q2", {"content": "a2"})
+
+    conversations.add_turn(seeded, conv_id, "q2 수정", {"content": "a2 수정"}, replace_turn_id=last["turn_id"], expected_version=last["version"])
+
+    texts = [m["content"] for m in conversations.get(seeded, conv_id, 1, 1)["messages"]]
+    assert texts == ["q1", "a1", "q2 수정", "a2 수정"]
+
+
+def test_an_edit_is_refused_when_the_conversation_changed_since_it_was_loaded(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "q1")
+    first = conversations.add_turn(seeded, conv_id, "q1", {"content": "a1"})
+    conversations.add_turn(seeded, conv_id, "q2", {"content": "a2"})  # 다른 탭이 새 턴을 이어갔다
+
+    with pytest.raises(conversations.TurnConflictError):
+        conversations.add_turn(seeded, conv_id, "q1 수정", {"content": "x"}, replace_turn_id=first["turn_id"], expected_version=first["version"])
+
+    assert [m["content"] for m in conversations.get(seeded, conv_id, 1, 1)["messages"]] == ["q1", "a1", "q2", "a2"]  # 아무것도 지워지지 않았다
+
+
+def test_a_failed_replacement_keeps_the_old_turn(seeded, monkeypatch):
+    conv_id = conversations.create(seeded, 1, 1, "q1")
+    last = conversations.add_turn(seeded, conv_id, "q1", {"content": "a1"})
+    real = conversations._insert_message
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("저장 실패")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conversations, "_insert_message", flaky)
+
+    with pytest.raises(RuntimeError):
+        conversations.add_turn(seeded, conv_id, "q1 수정", {"content": "a1 수정"}, replace_turn_id=last["turn_id"], expected_version=last["version"])
+
+    assert [m["content"] for m in conversations.get(seeded, conv_id, 1, 1)["messages"]] == ["q1", "a1"]  # 삭제도 함께 되돌아갔다
+
+
+def test_history_for_an_edit_leaves_out_the_turn_being_replaced(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "q1")
+    conversations.add_turn(seeded, conv_id, "q1", {"content": "a1"})
+    last = conversations.add_turn(seeded, conv_id, "q2", {"content": "a2"})
+
+    turns = conversations.history(seeded, conv_id, before_message_id=last["turn_id"])
+
+    assert [t["content"] for t in turns] == ["q1", "a1"]  # 바꿀 질문·답을 맥락에 넣지 않는다
+
+
+def test_a_first_turn_creates_the_conversation_in_the_same_transaction(seeded, monkeypatch):
+    saved = conversations.add_turn(seeded, None, "처음 질문", ANSWER, project_id=1, user_id=1)
+
+    assert conversations.get(seeded, saved["conversation_id"], 1, 1)["title"] == "처음 질문"
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("저장 실패")
+
+    monkeypatch.setattr(conversations, "_insert_message", broken)
+    before = seeded.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+    with pytest.raises(RuntimeError):
+        conversations.add_turn(seeded, None, "실패할 질문", ANSWER, project_id=1, user_id=1)
+
+    assert seeded.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == before  # 빈 대화가 남지 않는다
+
+
+def test_the_last_chart_before_an_edited_turn_ignores_the_turn_being_replaced(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "그래프")
+    first = conversations.add_turn(seeded, conv_id, "첫 그래프", {"content": "차트1", "kind": "chart", "chart": {"spec": {"form": "grouped"}}})
+    second = conversations.add_turn(seeded, conv_id, "색 바꿔", {"content": "차트2", "kind": "chart", "chart": {"spec": {"form": "rows"}}})
+
+    assert conversations.last_chart(seeded, conv_id) == {"spec": {"form": "rows"}}
+    # 두 번째 턴을 수정하면 그 턴의 차트가 아니라 그 앞 차트를 기준으로 한다
+    assert conversations.last_chart(seeded, conv_id, before_message_id=second["turn_id"]) == {"spec": {"form": "grouped"}}
+    assert first["turn_id"] < second["turn_id"]
+
+
+
+# --- 마지막이 아닌 질문도 수정·다시 시도할 수 있다(그 질문 뒤의 대화는 함께 지워진다) ---
+
+
+def test_editing_an_earlier_question_replaces_it_and_drops_everything_after_it(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "q1")
+    first = conversations.add_turn(seeded, conv_id, "q1", {"content": "a1"})
+    conversations.add_turn(seeded, conv_id, "q2", {"content": "a2"})
+    last = conversations.add_turn(seeded, conv_id, "q3", {"content": "a3"})
+
+    conversations.add_turn(seeded, conv_id, "q1 수정", {"content": "a1 수정"}, replace_turn_id=first["turn_id"], expected_version=last["version"])
+
+    assert [m["content"] for m in conversations.get(seeded, conv_id, 1, 1)["messages"]] == ["q1 수정", "a1 수정"]
+
+
+def test_editing_a_middle_question_keeps_the_turns_before_it(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "q1")
+    conversations.add_turn(seeded, conv_id, "q1", {"content": "a1"})
+    second = conversations.add_turn(seeded, conv_id, "q2", {"content": "a2"})
+    last = conversations.add_turn(seeded, conv_id, "q3", {"content": "a3"})
+
+    conversations.add_turn(seeded, conv_id, "q2 수정", {"content": "a2 수정"}, replace_turn_id=second["turn_id"], expected_version=last["version"])
+
+    assert [m["content"] for m in conversations.get(seeded, conv_id, 1, 1)["messages"]] == ["q1", "a1", "q2 수정", "a2 수정"]
+
+
+def test_only_a_question_of_this_conversation_can_be_replaced(seeded):
+    conv_id = conversations.create(seeded, 1, 1, "q1")
+    last = conversations.add_turn(seeded, conv_id, "q1", {"content": "a1"})
+    other_id = conversations.create(seeded, 1, 1, "다른 대화")
+    other = conversations.add_turn(seeded, other_id, "다른 질문", {"content": "다른 답"})
+    answer_id = last["turn_id"] + 1  # 답 메시지
+
+    with pytest.raises(conversations.TurnConflictError):
+        conversations.add_turn(seeded, conv_id, "x", {"content": "x"}, replace_turn_id=answer_id, expected_version=last["version"])  # 답은 질문이 아니다
+    with pytest.raises(conversations.TurnConflictError):
+        conversations.add_turn(seeded, conv_id, "x", {"content": "x"}, replace_turn_id=other["turn_id"], expected_version=last["version"])  # 다른 대화의 질문
+
+    assert [m["content"] for m in conversations.get(seeded, conv_id, 1, 1)["messages"]] == ["q1", "a1"]
+    assert [m["content"] for m in conversations.get(seeded, other_id, 1, 1)["messages"]] == ["다른 질문", "다른 답"]

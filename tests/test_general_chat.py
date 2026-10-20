@@ -570,3 +570,33 @@ def test_answer_web_with_sources_returns_the_body_and_the_sources_separately(mon
     assert usage == llm.Usage(8000, 60)
     assert llm.format_web_answer(result) == "기온은 19도입니다.\n\n출처:\n- 부천 날씨 (https://k.kr/w)"
     assert llm.format_web_answer(llm.WebResult("출처 없는 글", [])) == "출처 없는 글"
+
+
+# --- 사용자가 말한 장소는 검색 위치로 넘긴다(2026-10-15 "부천" 답에 독일 주소의 날씨 카드가 섞인 적이 있다) ---
+def test_answer_web_localizes_the_search_to_the_place_the_user_named(monkeypatch):
+    client = _ResponsesClient("부천은 흐립니다.", citations=[("https://www.weather.go.kr/a", "기상청")])
+    monkeypatch.setattr(llm, "_client", lambda: client)
+
+    llm.answer_web_with_sources("부천 오늘 날씨", [], place="부천")
+
+    assert client.kwargs["tools"] == [{"type": "web_search",
+                                       "user_location": {"type": "approximate", "country": "KR", "city": "부천", "timezone": "Asia/Seoul"}}]
+
+
+def test_answer_web_without_a_place_keeps_the_country_level_location(monkeypatch):
+    client = _ResponsesClient("1,400원입니다.", citations=[("https://example.com/x", "환율")])
+    monkeypatch.setattr(llm, "_client", lambda: client)
+
+    llm.answer_web_with_sources("오늘 환율", [])
+
+    assert client.kwargs["tools"][0]["user_location"] == {"type": "approximate", "country": "KR", "timezone": "Asia/Seoul"}
+
+
+def test_the_web_instructions_exclude_other_places_and_hourly_tables_from_the_answer(monkeypatch):
+    client = _ResponsesClient("부천은 흐립니다.", citations=[("https://www.weather.go.kr/a", "기상청")])
+    monkeypatch.setattr(llm, "_client", lambda: client)
+
+    llm.answer_web_with_sources("부천 오늘 날씨", [], place="부천")
+
+    instructions = client.kwargs["instructions"]
+    assert "다른 장소" in instructions and "시간별" in instructions  # 실측: 검색 결과의 엉뚱한 나라 날씨 카드(시간별 표)를 답에 옮겨 쓴 적이 있다

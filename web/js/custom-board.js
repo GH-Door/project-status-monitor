@@ -25,7 +25,7 @@ function widgetNode(spec) {
   if (spec.missing) return { size: "small", node: missingCard(spec) };
   if (spec.form === "tile") return { size: "small", node: tileCard(spec) };
   if (spec.form === "meter") return { size: "small", node: miniGauge({ kind: "ratio", title: spec.title, value: spec.value, display: fmtValue(spec.value, "%"), tip: sub(spec) }) };
-  return { size: "large", node: groupCard(spec.group, { form: spec.form }) };
+  return { size: "large", node: groupCard(spec.group, { form: spec.form, color: spec.style?.color, title: spec.style?.title }) };  // 문답 차트의 색·제목(서버가 허용 목록으로 검증한 값)
 }
 
 export function renderCustomBoard(widgets) {

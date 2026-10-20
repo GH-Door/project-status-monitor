@@ -46,8 +46,8 @@ FEW_SHOT = os.getenv("FEW_SHOT", "0") == "1"
 # 2026-10-12 dev 전체(비일반 134문항×2회) 측정: 문서 질문이 일반 답변으로 샌 건 0건, 일반 질문 14개는 모두 일반 답변, 정답률은 기준선 대비 잡음 범위 → 기본 켬.
 # 끄려면 GENERAL_CHAT=0
 GENERAL_CHAT = os.getenv("GENERAL_CHAT", "1") == "1"
-# 질문 처리 방식: gates(낱말 검사 + 분류기, 기존) | planner(모델이 도구를 골라 경로·독립 질문을 정한다, 평가 후 기본값 전환)
-ANSWER_PIPELINE = os.getenv("ANSWER_PIPELINE", "gates")
+# 질문 처리 방식: planner(모델이 도구를 골라 경로·독립 질문을 정한다, 문답 차트 포함 — 2026-10-20 기본값 전환) | gates(낱말 검사 + 분류기, 기존. 되돌리려면 ANSWER_PIPELINE=gates)
+ANSWER_PIPELINE = os.getenv("ANSWER_PIPELINE", "planner")
 # 웹 검색 답변 모델. 기본은 ANSWER_MODEL(변화 없음). 실측(8문항 1회): gpt-4.1-mini는 출처 인용을 3건에만 달고 4건은 "확인할 수 없다"고 답했고, gpt-4.1은 6건에 달고 8건 모두 값을 답했다
 WEB_MODEL = os.getenv("WEB_MODEL", ANSWER_MODEL)
 CLASSIFY_MAX_OUTPUT_TOKENS = 20  # 'document'/'general' 한 단어
@@ -55,6 +55,17 @@ GENERAL_MAX_OUTPUT_TOKENS = 700
 # 웹 검색: 날씨·시세처럼 지금의 정보가 필요한 일반 질문에만 쓴다(분류기가 web으로 가른 질문). 검색 결과가 입력에 들어가 호출당 입력이 크다.
 # 검색 호출 요금은 공식 가격표로 아직 확인하지 못한 추정치다(1,000회당 10달러 가정) — 예산 예약·정산에 보수적으로 쓴다.
 WEB_SEARCH_FEE_USD = 0.01
+
+# 문답 차트 엔진. catalog: 모델은 지표·형태·색·제목만 고르고 우리 차트가 그림(값은 승인된 표에서 읽음, 검증됨).
+# interpreter(목표 기본): 우리 차트가 자료를 고르고 GPT가 코드 실행(code_interpreter)으로 그 자료를 자유롭게 그림 — 색상·종류가 자유롭다.
+# 단 CHART_IMAGE_APPROVED(보안 담당 확인, 기본 꺼짐)가 켜져 있을 때만 쓰고, 꺼져 있으면 자료가 OpenAI 코드 실행 환경으로 나가지 않도록 catalog로 처리한다.
+# 실측(2026-10-16, 질문 8개·1개 회사): interpreter는 gpt-4.1-mini가 그리지 못했고(데이터만 읽고 끝남) gpt-4.1이 6/10, 지연 중앙 6.2초(자료 전체 CSV 방식)
+CHART_ENGINE = os.getenv("CHART_ENGINE", "interpreter")
+CHART_IMAGE_APPROVED = os.getenv("CHART_IMAGE_APPROVED", "").lower() in {"1", "true", "yes"}
+CHART_MODEL = os.getenv("CHART_MODEL", "gpt-4.1")
+CHART_CONTAINER_FEE_USD = 0.03  # 코드 실행 컨테이너 1GB 20분 세션당(공식 가격표, 5분 최소 과금 문구 있음). 57원은 USD_TO_KRW(1900) 가정 환율 기준
+CHART_IMAGE_TIMEOUT_S = 20  # 이미지 엔진 호출 제한 시간(제안값, 측정 후 확정). 넘으면 포기하고 우리 차트로 그린다
+CHART_FONT_PATH = os.getenv("CHART_FONT_PATH", "/Library/Fonts/NotoSansKOR-Regular.ttf")  # 그림 속 한글용. 없으면 올리지 않는다
 WEB_SEARCH_INPUT_CHARS_ESTIMATE = 30_000  # 검색 결과가 입력에 더해지는 양의 어림(실측 약 8천 토큰)
 FULL_DOCUMENT_CONTEXT = os.getenv("FULL_DOCUMENT_CONTEXT", "1") == "1"
 MAX_IMAGES_PER_ANSWER = 3

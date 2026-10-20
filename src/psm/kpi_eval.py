@@ -468,6 +468,12 @@ def run_meta(
     }
 
 
+def report_payload(meta: dict, summary: dict, runs: list[list[QuestionResult]]) -> dict:
+    """보고서 JSON. 주 수치(results)는 첫 실행이라 기존 소비자가 그대로 읽고, 반복 실행 전체는 runs에 원자료로 남긴다."""
+    raw = [[asdict(r) for r in run] for run in runs]
+    return {"meta": meta, "summary": summary, "results": raw[0], "runs": raw}
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["compare"]:
@@ -519,13 +525,10 @@ def main(argv: list[str] | None = None) -> None:
         summary["repeat"] = summarize_repeat(runs)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     if args.out:
-        args.out.write_text(
-            json.dumps({"meta": run_meta(args.questions, len(questions), args.split, args.level, args.repeat,
-                                         args.retrieval_only),
-                        "summary": summary, "results": [asdict(r) for r in results]},
-                       ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        meta = run_meta(args.questions, len(questions), args.split, args.level, args.repeat, args.retrieval_only)
+        payload = report_payload(meta, summary, runs)
+        payload["results"] = [asdict(r) for r in results]  # 검색 전용이면 results가 라벨이 붙은 사본이다
+        args.out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

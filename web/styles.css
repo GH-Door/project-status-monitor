@@ -239,6 +239,23 @@ details summary { cursor: pointer; color: var(--blue); font-size: 13px; }
 .cb-item { align-self: stretch; }  /* .card 기본값(start)을 덮어 같은 줄의 카드 높이를 맞춘다 */
 .cb-small { grid-column: span 3; } .cb-large { grid-column: span 6; }
 .cboard .gauge.mini { height: 230px; }
+.msg.user .msg-text { white-space: pre-wrap; }
+.msg.stopped { border-style: dashed; background: var(--tint); }
+.msg-actions { display: flex; gap: 2px; justify-content: flex-start; }
+.msg.user .msg-actions { justify-content: flex-end; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.icon-btn:hover:not(:disabled) { background: var(--tint); color: var(--ink); }
+.icon-btn:disabled { opacity: .4; cursor: default; }
+.msg.user .icon-btn { color: rgba(255,255,255,.85); }
+.msg.user .icon-btn:hover:not(:disabled) { background: rgba(255,255,255,.18); color: #fff; }
+.send-btn { min-width: 92px; display: inline-flex; align-items: center; justify-content: center; }  /* 글자↔아이콘이 바뀌어도 버튼 크기가 튀지 않게 */
+.btn.stop { background: #fff; border-color: var(--bad); color: var(--bad); }
+.edit-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--blue-soft); border-radius: 8px; background: var(--tint); font-size: 14px; }
+.edit-banner[hidden] { display: none; }
+.msg.chart { width: min(760px, 100%); }
+.msg.chart .cboard { grid-template-columns: minmax(0, 1fr); }  /* 말풍선 안에서는 한 칸 가득 */
+.msg.chart .chart-image { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.msg.chart .cb-item { grid-column: 1 / -1; }
 .tile-card { display: flex; flex-direction: column; gap: 6px; padding: 16px; min-height: 140px; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 .tile-card h3 { font-size: 14px; color: var(--ink-2); font-weight: 600; }
 .tile-value { font-size: 34px; font-weight: 650; letter-spacing: -0.03em; line-height: 1.15; overflow-wrap: anywhere; }

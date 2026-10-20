@@ -17,6 +17,9 @@ _MERGE_KINDS = frozenset({"metric", "compare_metric"})  # 여러 개를 한 그�
 _MERGE_FORMS = ("grouped", "rows")
 _MIN_COMPARE_SCOPES = overview._MIN_COMPARE_SCOPES
 _SHARE_MIN_PARTS, _SHARE_MAX_PARTS = 3, overview._SHARE_MAX_PARTS
+_LINE_MIN_MONTHS = 3  # 꺾은선은 시간 축 점이 3개 이상일 때만(두 점은 선이 아니라 막대가 낫다)
+# 문답 차트에서 사용자가 고를 수 있는 색(단일 계열만). 전부 흰 바탕 대비 3:1 이상이다(WCAG 대비 계산: 파랑 5.4·빨강 4.7·주황 5.0·초록 4.8·보라 8.3·회색 7.4)
+CHART_COLORS = {"blue": "#0057ff", "red": "#d92d20", "orange": "#c2410c", "green": "#008300", "purple": "#4a3aa7", "gray": "#4b5563"}
 
 
 def _norm(name: str) -> str:
@@ -82,6 +85,66 @@ def catalog(conn: sqlite3.Connection, project_id: int, scope: str | None = None)
     """고를 수 있는 지표·표. scope를 주면 그 하위 프로젝트의 것(비교 항목은 프로젝트 전체에서)."""
     return [*_metric_items(conn, project_id, scope), *_breakdown_items(conn, project_id, scope),
             *_compare_metric_items(conn, project_id), *_compare_breakdown_items(conn, project_id)]
+
+
+# --- 문답 차트용 후보: 같은 이름의 자료도 범위·문서가 다르면 다른 항목이며 고유 id를 가진다 ---
+
+
+def _item_id(kind: str, scope: str | None, name: str, unit: str) -> str:
+    return f"{kind}|{scope or ''}|{_norm(name)}|{unit}"
+
+
+def _is_monthly(labels: list[str]) -> bool:
+    return len(labels) >= _LINE_MIN_MONTHS and all(overview._label_month(label) for label in labels)
+
+
+def chart_catalog(conn: sqlite3.Connection, project_id: int) -> list[dict]:
+    """문답에서 그릴 수 있는 지표·표 전체(회사 전체 범위). 항목마다 id·범위(scope)·문서를 가진다.
+
+    대시보드 선택 화면의 catalog()는 이름·단위로 고르므로 같은 이름이 범위마다 있으면 첫 항목이 선택된다 — 문답은 그러면 안 된다.
+    """
+    items: dict[str, dict] = {}
+    for row in overview._published_rows(conn, project_id):
+        name = row["label"] or row["key"]
+        meter = row["unit"] == "%" and 0 <= row["value"] <= 100
+        item = {"kind": "metric", "name": name, "unit": row["unit"], "category": row["category"] or "기타",
+                "forms": ["tile", "meter"] if meter else ["tile"], "value": row["value"], "period": row["period"],
+                "scope": row["scope"] or None, "document": overview._nfc(row["filename"])}
+        items.setdefault(_item_id("metric", item["scope"], name, row["unit"]), item)
+    for b in overview._latest_breakdowns(conn, project_id):
+        item = {"kind": "breakdown", "name": b["name"], "unit": b["unit"], "category": "구성", "period": b["period"],
+                "forms": ["grouped", "rows", *(["line"] if _is_monthly([r["label"] for r in b["rows"]]) else []),
+                          *(["share"] if _can_share([r["value"] for r in b["rows"]]) else [])],
+                "scope": b["scope"] or None, "document": b["document"]}
+        items.setdefault(_item_id("breakdown", item["scope"], b["name"], b["unit"]), item)
+    for item in [*_compare_metric_items(conn, project_id), *_compare_breakdown_items(conn, project_id)]:
+        items.setdefault(_item_id(item["kind"], None, item["name"], item["unit"]), {**item, "scope": None, "document": None})
+    return [{**item, "id": item_id} for item_id, item in items.items()]
+
+
+def chart_check(items: list[dict], widget: dict, *, lenient_form: bool = False) -> dict:
+    """모델이 고른 차트(refs의 id, form)를 후보 목록으로 검증한다. 이름으로는 고르지 않는다 — 어느 범위·문서인지 모르기 때문.
+
+    lenient_form이면 형태가 비었거나 이 자료에 쓸 수 없을 때 그릴 수 있는 기본 형태로 바꾼다(요청한 형태는 form_fallback에 남긴다).
+    자료(id)는 어떤 경우에도 엄격하다."""
+    refs = widget.get("refs")
+    if not isinstance(refs, list) or not 1 <= len(refs) <= MAX_REFS:
+        raise LayoutError(f"차트에는 지표를 1~{MAX_REFS}개 고를 수 있습니다")
+    by_id = {i["id"]: i for i in items}
+    found = []
+    for ref in refs:
+        item = by_id.get(ref.get("id")) if isinstance(ref, dict) else None
+        if item is None:
+            raise LayoutError("고를 수 있는 목록에 없는 자료입니다")
+        found.append(item)
+    allowed = _allowed_forms(found)
+    form, fallback = widget.get("form"), None
+    if form not in allowed:
+        if not lenient_form:
+            raise LayoutError(f"이 데이터에는 '{form}' 형태를 쓸 수 없습니다")
+        form, fallback = allowed[0], widget.get("form") or None
+    return {"form": form, "form_fallback": fallback,
+            "refs": [{k: i[k] for k in ("id", "kind", "name", "unit", "scope", "document")} for i in found]}
 
 
 # --- 저장된 선택 ---
@@ -171,9 +234,9 @@ def _missing(widget: dict) -> dict:
     return {"form": widget["form"], "title": " · ".join(r["name"] for r in widget["refs"]), "missing": True}
 
 
-def _metric_widget(rows: list[dict], widget: dict) -> dict:
+def _metric_view(found: list[dict | None], widget: dict) -> dict:
+    """찾은 지표 행(없으면 None)으로 위젯을 만든다."""
     refs = widget["refs"]
-    found = [next((r for r in rows if _norm(r["label"] or r["key"]) == _norm(ref["name"]) and r["unit"] == ref["unit"]), None) for ref in refs]
     if any(row is None for row in found):
         return _missing(widget)
     if widget["form"] in ("tile", "meter"):
@@ -188,14 +251,23 @@ def _metric_widget(rows: list[dict], widget: dict) -> dict:
     return {"form": widget["form"], "group": group}
 
 
-def _breakdown_widget(conn: sqlite3.Connection, project_id: int, scope: str, widget: dict, as_of: date | None) -> dict:
-    ref = widget["refs"][0]
-    found = next((b for b in overview._latest_breakdowns(conn, project_id, scope or None, as_of)
-                  if b["name"] == ref["name"] and b["unit"] == ref["unit"]), None)
+def _metric_widget(rows: list[dict], widget: dict) -> dict:
+    found = [next((r for r in rows if _norm(r["label"] or r["key"]) == _norm(ref["name"]) and r["unit"] == ref["unit"]), None) for ref in widget["refs"]]
+    return _metric_view(found, widget)
+
+
+def _breakdown_view(found: dict | None, widget: dict) -> dict:
     if found is None:
         return _missing(widget)
     group = overview._build_group(found["name"], [found], False)
     return {"form": widget["form"], "group": {**group, "kind": "share" if widget["form"] == "share" else "bars"}}
+
+
+def _breakdown_widget(conn: sqlite3.Connection, project_id: int, scope: str, widget: dict, as_of: date | None) -> dict:
+    ref = widget["refs"][0]
+    found = next((b for b in overview._latest_breakdowns(conn, project_id, scope or None, as_of)
+                  if b["name"] == ref["name"] and b["unit"] == ref["unit"]), None)
+    return _breakdown_view(found, widget)
 
 
 def _compare_metric_widget(conn: sqlite3.Connection, project_id: int, widget: dict, as_of: date | None) -> dict:
@@ -220,6 +292,24 @@ def _widget_view(conn: sqlite3.Connection, project_id: int, scope: str, widget: 
         return _metric_widget(overview._published_rows(conn, project_id, scope or None, as_of), widget)
     if kind == "breakdown":
         return _breakdown_widget(conn, project_id, scope, widget, as_of)
+    if kind == "compare_metric":
+        return _compare_metric_widget(conn, project_id, widget, as_of)
+    return _compare_breakdown_widget(conn, project_id, widget, as_of)
+
+
+def chart_view(conn: sqlite3.Connection, project_id: int, widget: dict, as_of: date | None = None) -> dict:
+    """chart_check를 통과한 차트를 그릴 위젯으로 만든다. 값은 승인된 표에서 범위(scope)까지 맞는 항목만 읽는다."""
+    refs = widget["refs"]
+    kind = refs[0]["kind"]
+    if kind == "metric":
+        rows = overview._published_rows(conn, project_id, None, as_of)
+        found = [next((r for r in rows if (r["scope"] or None) == ref["scope"] and _norm(r["label"] or r["key"]) == _norm(ref["name"])
+                       and r["unit"] == ref["unit"]), None) for ref in refs]
+        return _metric_view(found, widget)
+    if kind == "breakdown":
+        found = next((b for b in overview._latest_breakdowns(conn, project_id, None, as_of)
+                      if (b["scope"] or None) == refs[0]["scope"] and b["name"] == refs[0]["name"] and b["unit"] == refs[0]["unit"]), None)
+        return _breakdown_view(found, widget)
     if kind == "compare_metric":
         return _compare_metric_widget(conn, project_id, widget, as_of)
     return _compare_breakdown_widget(conn, project_id, widget, as_of)

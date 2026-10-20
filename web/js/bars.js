@@ -3,6 +3,7 @@ import { el } from "./dom.js";
 import { svg } from "./donut.js";
 import { bare, fmtValue } from "./format.js";
 import { NEUTRAL, seriesColor } from "./palette.js";
+import { axisRange, hbarGeometry, lineSegments, niceMax } from "./scale.js";
 
 const MAX_SERIES = 4;  // 범주형은 4개까지만 — 그 이상은 표 보기에서 본다
 
@@ -11,12 +12,7 @@ export function legend(series) {
     el("span", {}, el("i", { style: `background:${s.color ?? seriesColor(i)}` }), s.name)));
 }
 
-// 눈금 4칸의 간격이 깔끔하도록(1·1.5·2·2.5·3·4·5·6·8) 최대를 정한다. 2.2억 → 2.4억 (5억까지 늘리지 않는다)
-const NICE_STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
-export const niceMax = (v) => {
-  const q = (v || 1) / 4, exp = 10 ** Math.floor(Math.log10(q)), n = q / exp;
-  return Number((NICE_STEPS.find((s) => n <= s + 1e-9) * exp * 4).toPrecision(12));
-};
+export { niceMax };
 const trim = (text, n = 7) => (text.length > n ? `${text.slice(0, Math.max(n - 1, 1))}…` : text);
 const fitChars = (slot) => Math.max(3, Math.floor(slot / 6.6));  // 칸 폭에 들어가는 글자 수
 const labelStep = (labels, slot) => Math.max(1, Math.ceil(Math.max(...labels.map((l) => l.length)) / fitChars(slot)));  // 시간 축 라벨 솎기 간격
@@ -53,8 +49,7 @@ function scaffold(width, height, max, unit, right = 14, min = 0) {  // min < 0�
 // 세로 묶음 막대: 두께 ≤ 28, 위쪽 끝만 4px 둥글게, 막대 사이 2px. 값 라벨은 막대가 적을 때만.
 export function columnChart({ labels, titles, series, unit, ariaLabel, height = 250, width = 480, thin = false }) {
   const shown = series.slice(0, MAX_SERIES);
-  const values = shown.flatMap((s) => s.values.filter((v) => v != null));
-  const max = niceMax(Math.max(...values, 1)), lowest = Math.min(...values, 0), min = lowest < 0 ? -niceMax(-lowest) : 0;
+  const { min, max } = axisRange(shown.flatMap((s) => s.values));
   const { root, m, y } = scaffold(width, height, max, unit, 14, min);
   root.setAttribute("aria-label", ariaLabel);
   const slot = (width - m.l - m.r) / labels.length, barW = Math.min(labels.length <= 2 ? 56 : 28, (slot * 0.72) / shown.length - 2), base = y(0);
@@ -86,23 +81,26 @@ export function columnChart({ labels, titles, series, unit, ariaLabel, height = 
 // 영역·선 차트: 2px 선, 끝 점 r=4(흰 고리 2px), 영역은 같은 색 10%. 마지막 값만 라벨.
 export function lineChart({ labels, series, unit, ariaLabel, height = 250, width = 480 }) {
   const shown = series.slice(0, MAX_SERIES);
-  const max = niceMax(Math.max(...shown.flatMap((s) => s.values.filter((v) => v != null)), 1));
-  const { root, m, y } = scaffold(width, height, max, unit);
+  const { min, max } = axisRange(shown.flatMap((s) => s.values));
+  const { root, m, y } = scaffold(width, height, max, unit, 14, min);  // 음수가 있으면 0선 아래로도 눈금을 둔다
   root.setAttribute("aria-label", ariaLabel);
   const x = (i) => m.l + 10 + (i * (width - m.l - m.r - 20)) / Math.max(labels.length - 1, 1);
   shown.forEach((s, j) => {
-    const color = s.color ?? seriesColor(j), pts = s.values.map((v, i) => (v == null ? null : [x(i), y(v), v, i])).filter(Boolean);
-    if (pts.length > 1) {
-      root.append(svg("path", { d: `M${pts[0][0]},${y(0)} ${pts.map((p) => `L${p[0]},${p[1]}`).join(" ")} L${pts.at(-1)[0]},${y(0)} Z`, fill: color, "fill-opacity": 0.1 }));
-      root.append(svg("polyline", { points: pts.map((p) => `${p[0]},${p[1]}`).join(" "), fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    const color = s.color ?? seriesColor(j);
+    for (const segment of lineSegments(s.values)) {  // 값이 없는 달에서 선을 끊는다 — 없는 값을 이어 그리지 않는다
+      const pts = segment.map((i) => [x(i), y(s.values[i]), s.values[i], i]);
+      if (pts.length > 1) {
+        root.append(svg("path", { d: `M${pts[0][0]},${y(0)} ${pts.map((p) => `L${p[0]},${p[1]}`).join(" ")} L${pts.at(-1)[0]},${y(0)} Z`, fill: color, "fill-opacity": 0.1 }));
+        root.append(svg("polyline", { points: pts.map((p) => `${p[0]},${p[1]}`).join(" "), fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      }
+      for (const [px, py, v, i] of pts) {
+        root.append(withTip(svg("circle", { cx: px, cy: py, r: 5, fill: color, stroke: "#fff", "stroke-width": 2 }), fmtValue(v, unit), `${s.name} · ${labels[i]}`));
+      }
     }
-    for (const [px, py, v, i] of pts) {
-      root.append(withTip(svg("circle", { cx: px, cy: py, r: 5, fill: color, stroke: "#fff", "stroke-width": 2 }), fmtValue(v, unit), `${s.name} · ${labels[i]}`));
-    }
-    const [lx, ly, lv] = pts.at(-1) ?? [];
-    if (lx != null) {
-      const t = svg("text", { x: lx, y: j ? ly + 16 : ly - 10, "text-anchor": "end", class: "val-label" });  // 둘째 계열은 점 아래에 써서 겹치지 않게
-      t.textContent = bare(lv, unit);
+    const last = lineSegments(s.values).at(-1)?.at(-1);  // 마지막 값만 라벨
+    if (last != null) {
+      const t = svg("text", { x: x(last), y: j ? y(s.values[last]) + 16 : y(s.values[last]) - 10, "text-anchor": "end", class: "val-label" });  // 둘째 계열은 점 아래에 써서 겹치지 않게
+      t.textContent = bare(s.values[last], unit);
       root.append(t);
     }
   });
@@ -117,14 +115,15 @@ export function lineChart({ labels, series, unit, ariaLabel, height = 250, width
 // 가로 묶음 막대: 항목이 많거나 이름이 길 때. 두께 ≤ 20, 값은 막대 끝에.
 export function rowChart({ labels, titles, series, unit }) {
   const shown = series.slice(0, MAX_SERIES);
-  const max = Math.max(...shown.flatMap((s) => s.values.filter((v) => v != null)), 1);
+  const every = shown.flatMap((s) => s.values);  // 0선 기준으로 그려 0·음수 값도 보인다(값이 없는 칸만 건너뛴다)
   return el("div", { class: "hbar" }, labels.map((label, i) => el("div", { class: "hbar-row" },
     el("span", { class: "hbar-label", title: titles?.[i] ?? null }, label),
     el("div", { class: "hbar-stack" }, shown.map((s, j) => {
       const v = s.values[i];
-      if (v == null || v <= 0) return null;
+      if (v == null) return null;
+      const { left, width: pct } = hbarGeometry(v, every);
       const line = el("div", { class: "hbar-line" }, el("div", { style: "flex:1;min-width:0" },
-        el("div", { class: "hbar-bar", style: `width:${(v / max) * 100}%;background:${s.color ?? seriesColor(j)}`, "aria-hidden": "true" })),
+        el("div", { class: "hbar-bar", style: `margin-left:${left}%;width:${Math.max(pct, v === 0 ? 0.6 : 0)}%;background:${s.color ?? seriesColor(j)}`, "aria-hidden": "true" })),
         el("span", { class: "hbar-val" }, bare(v, unit)));
       return withTip(el("div", { tabindex: "0", "aria-label": `${s.name} ${titles?.[i] ?? label} ${fmtValue(v, unit)}` }, line), fmtValue(v, unit), `${s.name} · ${titles?.[i] ?? label}`);
     })))));

@@ -35,8 +35,9 @@ export function chartCard({ title, sub, forms, headers, rows, wide = false, boar
 }
 
 // ---- 표(group) → 여러 형식
-function formSet(g, board) {
-  const series = g.series.map((s, i) => ({ ...s, color: seriesColor(i) })), shown = series.slice(0, 4), r = roles(g);
+function formSet(g, board, color = null) {
+  const single = color && g.series.length === 1;  // 사용자가 고른 색은 계열이 하나일 때만(여러 계열은 색이 계열을 구분한다)
+  const series = g.series.map((s, i) => ({ ...s, color: single ? color : seriesColor(i) })), shown = series.slice(0, 4), r = roles(g);
   const monthAxis = isMonthAxis(g.labels);  // 시간은 가로(x)축에 두고 라벨은 YY.MM으로 줄인다. 전체 라벨은 툴팁
   const shape = { labels: monthAxis ? g.labels.map(monthShort) : g.labels, titles: monthAxis ? g.labels : g.label_titles, unit: g.unit, thin: monthAxis }, aria = `${g.title} ${shown.map((s) => s.name).join(", ")}`;
   // 출고 = 순판매 + 반품이라 셋을 한 막대에 쌓으면 같은 수량이 두 번 센다. 순판매·반품이 있으면 출고(합계)는 쌓지 않는다.
@@ -47,6 +48,7 @@ function formSet(g, board) {
     grouped: { label: "묶음", node: wrap(shown, short ? sized(({ width, height }) => columnChart({ ...shape, series: shown, ariaLabel: aria, width, height }), board) : rowChart({ ...shape, series: shown })) },
     ...(hasNegative ? {} : { stacked: { label: "누적", node: wrap(parts, sized(({ width, height }) => stackedColumnChart({ ...shape, series: parts, ariaLabel: aria, width, height }), board)) } }),
     rows: { label: "가로", node: wrap(shown, rowChart({ ...shape, series: shown })) },
+    ...(monthAxis && g.labels.length >= 3 ? { line: { label: "선", node: wrap(shown, sized(({ width, height }) => lineChart({ labels: shape.labels, series: shown, unit: g.unit, ariaLabel: aria, width, height }), board)) } } : {}),
   };
   if (r.burn) {
     set.burn = { label: "예산 소진", node: el("div", { class: "form-wrap" }, legend([{ name: "누계 집행", color: seriesColor(0) }, { name: "추가 예상", color: seriesColor(0) }, { name: "여유", color: "#e8edf5" }]),
@@ -63,6 +65,7 @@ function formSet(g, board) {
 }
 
 const ORDER = {
+  line: ["line", "grouped", "rows"],
   stacked: ["stacked", "grouped", "rows"], grouped: ["grouped", "stacked", "rows"], rows: ["rows", "grouped"],
   combo: ["combo", "grouped", "stacked"], burn: ["burn", "grouped", "rows"],
 };
@@ -82,14 +85,14 @@ function shareDonut(g) {
       g.labels.length > SHARE_LEGEND_ROWS ? el("li", { class: "muted" }, el("i"), el("span", {}, `외 ${g.labels.length - SHARE_LEGEND_ROWS}개 (표에서 보기)`)) : null));
 }
 
-export function groupCard(g, { board = false, form = null } = {}) {
-  const { set, series } = formSet(g, board);
+export function groupCard(g, { board = false, form = null, color = null, title: userTitle = null } = {}) {
+  const { set, series } = formSet(g, board, color);
   const key = form ?? defaultForm(g);
   const order = g.kind === "share" ? null : (ORDER[key] ?? ORDER.grouped).filter((k) => set[k]);
   const forms = g.kind === "share"
     ? [{ label: "도넛", node: shareDonut(g) }, { label: "띠", node: shareStripNode(g) }]
     : order.map((k) => set[k]);
-  const title = chartTitle(g.title, series.slice(0, 4).map((x) => x.name), g.unit);
+  const title = userTitle ? chartTitle(userTitle, [], g.unit) : chartTitle(g.title, series.slice(0, 4).map((x) => x.name), g.unit);  // 사용자가 정한 제목이 우선(textContent로만 표시)
   return chartCard({ title, sub: `${g.period ?? "기간 없음"} · ${stripMd(g.document)}`, forms, board,
     note: [...(g.stats ?? []).map((st) => statsLine(st, g.unit, g.stats.length > 1)),
       ...(!board && series.length > 4 ? [`계열이 ${series.length}개라 앞 4개만 그렸어요. 표에서 전체를 볼 수 있어요.`] : [])],

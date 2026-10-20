@@ -325,7 +325,8 @@ _WEB_SYSTEM = (
     "3) 한국어 존댓말로 간결하게 답하고 첫 문장에 결론을 씁니다. 날짜·시각·수치는 검색 결과의 표기 그대로 쓰고 기준 시각을 함께 알립니다. "
     "4) 질문에 장소·기간이 빠져 있으면 앞선 대화에서 찾고, 그래도 없으면 무엇이 필요한지 한 줄로 되묻습니다. "
     "5) 법률·의료·금융처럼 틀리면 위험한 내용은 전문가 확인이 필요하다고 한 줄 덧붙입니다. "
-    "6) 검색 결과의 제목·주소·광고 문구를 답에 옮겨 쓰지 않고 질문에 대한 답만 씁니다."
+    "6) 검색 결과의 제목·주소·광고 문구를 답에 옮겨 쓰지 않고 질문에 대한 답만 씁니다. "
+    "7) 질문한 장소와 다른 장소·다른 나라의 정보와 시간별 예보 표는 답에 넣지 않고, 질문한 장소 하나에 대한 결론을 짧게 씁니다."
 )
 _WEB_SOURCES_MAX = 3
 _INLINE_CITATION = re.compile(r"\s*\(\[[^\]]*\]\([^)]*\)\)")  # 본문에 끼어 오는 "([사이트](주소))" — 출처는 아래에 따로 적는다
@@ -416,11 +417,17 @@ def format_web_answer(result: WebResult) -> str:
     return result.text + "\n\n출처:\n" + "\n".join(f"- {title} ({url})" for title, url in result.sources)
 
 
-_WEB_SEARCH_TOOL = {"type": "web_search", "user_location": {"type": "approximate", "country": "KR", "timezone": "Asia/Seoul"}}
+def _web_search_tool(place: str | None = None) -> dict:
+    """웹 검색 도구. 사용자가 말한 장소가 있으면 도시로 지정한다(공식 문서: city는 자유 텍스트).
+    장소를 주지 않으면 한국·서울 시간대까지만 지정한다 — 그래도 검색 결과에 엉뚱한 나라의 날씨 카드가 섞인 적이 있어(실측) 장소를 아는 질문은 꼭 넘긴다."""
+    location = {"type": "approximate", "country": "KR", **({"city": place} if place else {}), "timezone": "Asia/Seoul"}
+    return {"type": "web_search", "user_location": location}
 
 
 @log_timing(logger, "answer_web")
-def answer_web_with_sources(question: str, history: list[dict], model: str = WEB_MODEL, now: datetime | None = None) -> tuple[WebResult, Usage]:
+def answer_web_with_sources(
+    question: str, history: list[dict], model: str = WEB_MODEL, now: datetime | None = None, place: str | None = None
+) -> tuple[WebResult, Usage]:
     """실시간·최신 정보가 필요한 질문에 웹 검색으로 답한다. 구조화 출력은 쓰지 않는다 —
     검색 도구와 함께 쓰면 JSON이 깨지는 경우가 있어(시험에서 확인) 일반 글로 받고, 출처는 응답의 인용에서 모은다.
     모델은 오늘 날짜를 몰라 '2024년 4월 27일 환율'처럼 옛 날짜로 검색하므로 현재 시각(서울)을 알려 준다.
@@ -432,7 +439,7 @@ def answer_web_with_sources(question: str, history: list[dict], model: str = WEB
     def _do():
         return _client().responses.create(
             model=model, instructions=instructions, input=f"{context}질문: {question}",
-            tools=[_WEB_SEARCH_TOOL], max_output_tokens=GENERAL_MAX_OUTPUT_TOKENS, temperature=LLM_TEMPERATURE)
+            tools=[_web_search_tool(place)], max_output_tokens=GENERAL_MAX_OUTPUT_TOKENS, temperature=LLM_TEMPERATURE)
 
     response = _call_with_retry(_do)
     usage = Usage(response.usage.input_tokens, response.usage.output_tokens)

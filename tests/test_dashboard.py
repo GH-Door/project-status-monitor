@@ -327,3 +327,96 @@ def test_a_chosen_metric_that_disappears_is_shown_as_missing_not_dropped(conn, s
     first, second = dashboard.layout_view(conn, stocked, "N01-P01")["widgets"]
 
     assert first == {"form": "tile", "title": "승인 예산", "missing": True} and second["value"] == 96_000_000
+
+
+# --- 문답 차트용 후보(chart_catalog): 같은 이름의 자료도 범위·문서로 구분되는 고유 ID를 가진다 ---
+
+def _two_scope_tables(conn, pid):
+    add_breakdown(conn, pid, "월별 폐기", {"2026-08": 100.0, "2026-09": 120.0}, "N01-P01", unit="박스", doc=901)
+    add_breakdown(conn, pid, "월별 폐기", {"2026-08": 900.0, "2026-09": 950.0}, "N01-P02", unit="박스", doc=902)
+
+
+def test_same_named_tables_of_different_scopes_are_separate_chart_items_with_unique_ids(conn, pid):
+    _two_scope_tables(conn, pid)
+
+    items = [i for i in dashboard.chart_catalog(conn, pid) if i["kind"] == "breakdown" and i["name"] == "월별 폐기"]
+
+    assert {i["scope"] for i in items} == {"N01-P01", "N01-P02"} and len({i["id"] for i in items}) == 2
+    assert {i["document"] for i in items} == {"a_라이트.md", "b_브릿지.md"}  # 모델·사용자가 어느 자료인지 알 수 있다
+
+
+def test_each_chart_item_draws_its_own_scopes_values_not_the_first_match(conn, pid):
+    _two_scope_tables(conn, pid)
+    items = {i["scope"]: i for i in dashboard.chart_catalog(conn, pid) if i["kind"] == "breakdown" and i["name"] == "월별 폐기"}
+
+    first = dashboard.chart_view(conn, pid, dashboard.chart_check(list(items.values()), {"refs": [{"id": items["N01-P01"]["id"]}], "form": "grouped"}))
+    second = dashboard.chart_view(conn, pid, dashboard.chart_check(list(items.values()), {"refs": [{"id": items["N01-P02"]["id"]}], "form": "grouped"}))
+
+    assert sorted(first["group"]["series"][0]["values"]) == [100.0, 120.0]
+    assert sorted(second["group"]["series"][0]["values"]) == [900.0, 950.0]  # A사업=100, B사업=900을 섞지 않는다
+
+
+def test_same_named_metrics_of_different_scopes_keep_their_own_values(conn, pid):
+    add_metric(conn, pid, "계약 처리량", 100.0, "N01-P01", unit="톤", doc=901)
+    add_metric(conn, pid, "계약 처리량", 900.0, "N01-P02", unit="톤", doc=902)
+    items = {i["scope"]: i for i in dashboard.chart_catalog(conn, pid) if i["kind"] == "metric" and i["name"] == "계약 처리량"}
+    assert set(items) == {"N01-P01", "N01-P02"}
+
+    values = {scope: dashboard.chart_view(conn, pid, dashboard.chart_check(list(items.values()), {"refs": [{"id": i["id"]}], "form": "tile"}))["value"]
+              for scope, i in items.items()}
+
+    assert values == {"N01-P01": 100.0, "N01-P02": 900.0}
+
+
+def test_a_ref_without_a_known_id_is_rejected_instead_of_matched_by_name(conn, pid):
+    _two_scope_tables(conn, pid)
+    items = dashboard.chart_catalog(conn, pid)
+
+    with pytest.raises(dashboard.LayoutError):
+        dashboard.chart_check(items, {"refs": [{"id": "없는-id"}], "form": "grouped"})
+    with pytest.raises(dashboard.LayoutError):  # 이름만 주면 어느 범위인지 모르니 고르지 않는다
+        dashboard.chart_check(items, {"refs": [{"name": "월별 폐기", "unit": "박스", "kind": "breakdown"}], "form": "grouped"})
+
+
+def test_chart_check_applies_the_same_form_rules_as_the_dashboard(conn, pid):
+    _two_scope_tables(conn, pid)
+    item = next(i for i in dashboard.chart_catalog(conn, pid) if i["kind"] == "breakdown" and i["name"] == "월별 폐기")
+
+    with pytest.raises(dashboard.LayoutError):
+        dashboard.chart_check([item], {"refs": [{"id": item["id"]}], "form": "meter"})  # 이 데이터에는 쓸 수 없는 형태
+    checked = dashboard.chart_check([item], {"refs": [{"id": item["id"]}], "form": "rows"})
+    assert checked["refs"][0]["id"] == item["id"] and checked["refs"][0]["scope"] == item["scope"]
+
+
+# --- 꺾은선: 월 축으로 3개월 이상인 표만 ---
+
+def test_a_monthly_table_with_three_or_more_months_can_be_a_line(conn, pid):
+    add_breakdown(conn, pid, "월별 폐기", {"2026-07": 130.0, "2026-08": 160.0, "2026-09": 90.0}, "N01-P01", unit="박스")
+    add_breakdown(conn, pid, "두 달 표", {"2026-08": 1.0, "2026-09": 2.0}, "N01-P01", unit="박스", doc=902)
+    add_breakdown(conn, pid, "채널별 매출", {"온라인": 1.0, "오프라인": 2.0, "도매": 3.0}, "N01-P01", unit="원", doc=903)
+
+    forms = {i["name"]: i["forms"] for i in dashboard.chart_catalog(conn, pid) if i["kind"] == "breakdown"}
+
+    assert "line" in forms["월별 폐기"]
+    assert "line" not in forms["두 달 표"] and "line" not in forms["채널별 매출"]  # 시간 축이 아니거나 점이 부족하면 선을 쓰지 않는다
+
+
+def test_a_line_choice_is_refused_for_data_without_a_month_axis(conn, pid):
+    add_breakdown(conn, pid, "채널별 매출", {"온라인": 1.0, "오프라인": 2.0, "도매": 3.0}, "N01-P01", unit="원")
+    item = next(i for i in dashboard.chart_catalog(conn, pid) if i["name"] == "채널별 매출")
+
+    with pytest.raises(dashboard.LayoutError):
+        dashboard.chart_check([item], {"refs": [{"id": item["id"]}], "form": "line"})
+
+
+def test_chart_check_can_fall_back_to_a_default_form_but_never_for_unknown_data(conn, pid):
+    add_breakdown(conn, pid, "월별 폐기", {"2026-07": 130.0, "2026-08": 160.0, "2026-09": 90.0}, "N01-P01", unit="박스")
+    item = next(i for i in dashboard.chart_catalog(conn, pid) if i["name"] == "월별 폐기")
+
+    blank = dashboard.chart_check([item], {"refs": [{"id": item["id"]}], "form": ""}, lenient_form=True)
+    invalid = dashboard.chart_check([item], {"refs": [{"id": item["id"]}], "form": "meter"}, lenient_form=True)
+
+    assert blank["form"] == "grouped" and blank["form_fallback"] is None  # 말하지 않은 형태는 알릴 것이 없다
+    assert invalid["form"] == "grouped" and invalid["form_fallback"] == "meter"
+    with pytest.raises(dashboard.LayoutError):
+        dashboard.chart_check([item], {"refs": [{"id": "없는-id"}], "form": ""}, lenient_form=True)

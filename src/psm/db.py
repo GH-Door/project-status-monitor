@@ -29,6 +29,7 @@ _ADDED_COLUMNS = [
     ("kpi_breakdowns", "scope", "TEXT"),
     ("documents", "kpi_extracted_at", "TEXT"),
     ("messages", "kind", "TEXT NOT NULL DEFAULT 'document'"),
+    ("messages", "chart_json", "TEXT"),
 ]
 
 

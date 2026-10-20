@@ -1,7 +1,9 @@
 import sqlite3
 
 import pytest
+from fastapi.testclient import TestClient
 
+from psm import api, dify, ingest, kpi, library, llm
 from psm.db import init_db
 
 
@@ -56,3 +58,34 @@ def _verifier_passes_by_default(monkeypatch, request):
 def _general_chat_off(monkeypatch):
     """일반 질문 기능은 서비스 기본이 켜짐이지만, 테스트는 분류 호출(OpenAI)이 새어 나가지 않게 꺼 두고 필요한 테스트가 직접 켠다."""
     monkeypatch.setattr("psm.rag.GENERAL_CHAT", False)
+
+
+@pytest.fixture(autouse=True)
+def _answer_pipeline_gates(monkeypatch):
+    """서비스 기본은 planner지만, 낱말 검사·분류기(gates) 시험이 많아 기본은 gates로 고정한다. planner를 시험하는 테스트가 직접 켠다."""
+    monkeypatch.setattr("psm.rag.ANSWER_PIPELINE", "gates")
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "DB_PATH", tmp_path / "app.db")
+    monkeypatch.setattr(api, "UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(api, "RAG_DOCS_DIR", tmp_path / "RAG_문서")
+    monkeypatch.setattr(ingest, "ORIGINALS_DIR", tmp_path / "originals")
+    monkeypatch.setattr(llm, "OPENAI_API_KEY", "")
+    monkeypatch.setattr(library, "COMPANY_NAME", "")
+    llm.set_runtime_api_key(None)
+    counter = {"n": 0}
+
+    def _create_dataset(name):
+        counter["n"] += 1
+        return f"ds-{counter['n']}"
+
+    monkeypatch.setattr(dify, "create_dataset", _create_dataset)
+    monkeypatch.setattr(dify, "add_text_document", lambda ds, asset_id, text: f"d-{asset_id}")
+    # 문서별 지표(LLM) 추출은 기본적으로 건너뛴 것으로 둔다 — 필요한 테스트가 직접 바꾼다
+    monkeypatch.setattr(kpi, "extract_and_save", lambda *a, **k: kpi.ExtractResult())
+    (tmp_path / "RAG_문서").mkdir()
+    with TestClient(api.app, headers={api.CSRF_HEADER: api.CSRF_VALUE}) as test_client:
+        yield test_client
+    llm.set_runtime_api_key(None)

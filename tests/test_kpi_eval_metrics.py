@@ -673,3 +673,21 @@ def test_load_questions_reads_the_acceptable_documents_with_normalized_filenames
 def test_a_web_answer_counts_as_a_general_answer_for_leak_detection():
     assert m.classify_failure("general", context_hit=None, correct=True, risky=False, citation_ok=None, answer_kind="web") is None
     assert m.classify_failure("answerable", context_hit=True, correct=True, risky=False, citation_ok=True, answer_kind="web") == "misrouted_general"
+
+
+# --- 보고서 원자료: 반복 실행을 첫 실행만이 아니라 전부 남긴다 ---
+
+
+def _raw_result(qid, correct):
+    return kpi_eval.QuestionResult(id=qid, category="c", type="answerable", retrieved_hit=True, abstained=False, correct=correct,
+                                   needs_human=False, latency_s=1.0, answer="a")
+
+
+def test_the_report_keeps_every_repeat_as_raw_data_not_only_the_first_run():
+    runs = [[_raw_result("Q1", True)], [_raw_result("Q1", False)], [_raw_result("Q1", True)]]
+
+    report = kpi_eval.report_payload({"repeat": 3}, {"accuracy": 1.0}, runs)
+
+    assert [run[0]["correct"] for run in report["runs"]] == [True, False, True]  # 둘째 실행의 실패가 사라지지 않는다
+    assert report["results"] == report["runs"][0]  # 기존 소비자는 첫 실행을 그대로 본다(호환)
+    assert report["meta"] == {"repeat": 3} and report["summary"] == {"accuracy": 1.0}

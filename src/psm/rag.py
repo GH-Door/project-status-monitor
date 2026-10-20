@@ -66,7 +66,8 @@ class Answer:
     abstain_reason: str | None = None
     errored: bool = False  # 근거 부족이 아니라 장애(생성 실패 등)로 답하지 못한 경우
     rewritten_query: str | None = None  # 이전 대화가 있을 때 실제로 검색에 쓴 독립 질문
-    kind: str = "document"  # "general"은 문서 근거 없이 일반 지식으로, "web"은 웹 검색으로 답한 것(둘 다 evidence가 없다)
+    kind: str = "document"  # "general"은 문서 근거 없이 일반 지식으로, "web"은 웹 검색으로 답한 것(둘 다 evidence가 없다). "chart"는 승인된 지표를 그래프로 보여 준 것
+    chart: dict | None = None  # kind가 "chart"일 때 화면이 그릴 위젯(dashboard._widget_view와 같은 모양). 그릴 수 없었으면 None
     timings: dict[str, float] = field(default_factory=dict)  # 단계별 걸린 시간(초). 평가에서 지연이 어디서 나는지 가르는 데 쓴다
 
     @classmethod
@@ -189,6 +190,13 @@ def _route_doc_type(conn: sqlite3.Connection, project_id: int, question: str, do
     budget.settle(conn, reservation_id, llm.actual_cost_krw(ANSWER_MODEL, usage.prompt_tokens, usage.completion_tokens))
     choice = (choice or "").strip()
     return choice if choice in doc_types else None
+
+
+def _selected_document_names(conn: sqlite3.Connection, project_id: int, document_ids: list[int]) -> list[str]:
+    """선택 문서의 파일 이름(화면에 보이는 이름). 이 사업 소속만."""
+    marks = ",".join("?" * len(document_ids))
+    rows = conn.execute(f"SELECT filename FROM documents WHERE project_id = ? AND id IN ({marks}) ORDER BY id", (project_id, *document_ids)).fetchall()
+    return [row["filename"] for row in rows]
 
 
 def _selected_asset_names(
@@ -443,16 +451,18 @@ def answer_question(
     question: str,
     document_ids: list[int] | None = None,
     history: list[dict] | None = None,
+    last_chart: dict | None = None,
 ) -> Answer:
-    """history는 서버가 저장한 이전 대화다. 말뜻을 잇는 맥락일 뿐 근거가 아니다 — 근거는 매 턴 새로 검색한다."""
+    """history는 서버가 저장한 이전 대화다. 말뜻을 잇는 맥락일 뿐 근거가 아니다 — 근거는 매 턴 새로 검색한다.
+    last_chart는 이 대화에서 가장 최근에 그린 차트(위젯 + 스펙)다 — 차트를 고쳐 달라는 후속 요청이 같은 자료를 이어 쓴다."""
     # 클라이언트가 보낸 project_id·역할을 그대로 신뢰하지 않는다 — 서버가 매번 재확인한다(§6).
     require_project_access(conn, user_id, project_id, action="read")
 
-    if ANSWER_PIPELINE == "planner" and GENERAL_CHAT and not document_ids:  # 계획 호출 하나가 재작성·분류를 대신한다
+    if ANSWER_PIPELINE == "planner" and GENERAL_CHAT:  # 계획 호출 하나가 재작성·분류를 대신한다(문서를 골랐어도 계획을 거친다)
         # 순환 import를 피하려고 여기서 불러온다(answering이 이 모듈을 쓴다)
         from psm.answering import answer as answer_with_planner
 
-        return answer_with_planner(conn, user_id, project_id, dataset_id, question, history)
+        return answer_with_planner(conn, user_id, project_id, dataset_id, question, history, document_ids or None, last_chart)
     timings: dict[str, float] = {}
     if history:
         with _stage(timings, "rewrite"):

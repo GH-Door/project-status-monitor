@@ -195,6 +195,7 @@ CREATE TABLE IF NOT EXISTS messages (
     abstained       INTEGER NOT NULL DEFAULT 0,
     abstain_reason  TEXT,
     kind            TEXT NOT NULL DEFAULT 'document', -- 'general'(일반 지식)·'web'(웹 검색)이면 문서 근거 없이 답한 대화(질문·답 모두)
+    chart_json      TEXT,                       -- kind='chart'인 답이 그린 차트(위젯 + 사용한 스펙). 다시 열어도 같은 차트가 나오고, 후속 수정의 기준이 된다
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
