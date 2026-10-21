@@ -31,11 +31,14 @@ def test_both_pipelines_keep_original_question_and_apply_exact_item_evidence(con
         return [_hit(1, text)]
 
     def parse(**kwargs):
+        if kwargs["response_format"] is llm.QuestionItems:
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=llm.QuestionItems(items=["청구 합계"])))],
+                                   usage=SimpleNamespace(prompt_tokens=5, completion_tokens=5))
         seen["answer_input"] = kwargs["messages"][1]["content"][0]["text"]
-        result = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
-            asked="청구 합계", found="청구 합계 100원", status="supported", answer="청구 합계는 100원입니다.",
-            sources=[llm.ItemSource(asset_id=1, span_ids=["a1:l999" if fabricated else "a1:l1"])], reason="")])
-        assert kwargs["response_format"] is llm.CheckedAnswerResult
+        # Simulate even an SDK/parser that bypasses bounds: server must still fail closed.
+        result = kwargs["response_format"].model_construct(item_1={
+            "found": "청구 합계 100원", "status": "supported", "answer": "청구 합계는 100원입니다.",
+            "citation_refs": [999 if fabricated else 1]})
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=result))],
                                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=10))
 
@@ -456,8 +459,8 @@ def test_returned_evidence_keeps_the_retrieved_chunk_for_display(conn, monkeypat
     assert [e.content for e in result.evidence] == ["머리글"]  # 근거 카드는 짧게 유지한다
 
 
-@pytest.mark.parametrize("span_id, blocked", [("a1:l2", False), ("a1:l999", True)])
-def test_source_spans_are_resolved_from_full_context_without_an_extra_call(conn, monkeypatch, span_id, blocked):
+@pytest.mark.parametrize("source_ref, blocked", [(2, False), (999, True)])
+def test_source_refs_are_resolved_after_item_planning_without_a_quote_repair_call(conn, monkeypatch, source_ref, blocked):
     from types import SimpleNamespace
 
     _seed_project(conn)
@@ -471,22 +474,22 @@ def test_source_spans_are_resolved_from_full_context_without_an_extra_call(conn,
 
     def parse(**kwargs):
         calls.append(kwargs)
-        parsed = llm.CheckedAnswerResult(items=[llm.ItemEvidenceCheck(
-            asked="최종 청구액", found="최종 청구액은 110원", status="supported", answer="최종 청구액은 110원입니다.",
-            sources=[llm.ItemSource(asset_id=1, span_ids=[span_id])], reason="",
-        )])
+        parsed = (llm.QuestionItems(items=["최종 청구액"]) if kwargs["response_format"] is llm.QuestionItems
+                  else kwargs["response_format"].model_construct(item_1={"found": "최종 청구액은 110원", "status": "supported",
+                       "answer": "최종 청구액은 110원입니다.", "citation_refs": [source_ref]}))
         return SimpleNamespace(usage=SimpleNamespace(prompt_tokens=30, completion_tokens=20),
             choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))])
 
     monkeypatch.setattr(llm, "_client", lambda: SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(parse=parse))))
     result = rag.answer_question(conn, 1, 1, "ds", "최종 청구액은?")
     assert result.abstained is blocked
-    assert len(calls) == 1
-    assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'settled'").fetchone()[0] == 1
+    assert len(calls) == 2  # 항목 분리 + 답변. 원문 인용 복원은 서버가 수행
+    # 매출 의도 예약 1건 + 분리/답변을 합산 정산한 예약 1건.
+    assert conn.execute("SELECT COUNT(*) FROM api_usage WHERE status = 'settled'").fetchone()[0] == 2
     if not blocked:
         assert result.text == "최종 청구액은 110원입니다."
         assert [e.content for e in result.evidence] == ["최종 청구액은 110원"]
-        assert '<span id="a1:l2">최종 청구액은 110원</span>' in calls[0]["messages"][1]["content"][0]["text"]
+        assert '<span ref="2">최종 청구액은 110원</span>' in calls[1]["messages"][1]["content"][0]["text"]
     else:
         assert result.reason_code == "citation_error"
 

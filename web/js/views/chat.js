@@ -86,7 +86,7 @@ export async function render() {
     fill(docsPane,
       el("div", { class: "row", style: "justify-content:space-between" }, el("h3", {}, "문서 선택"),
         el("button", { type: "button", class: "btn ghost small", onclick: () => { state.selectedDocs.clear(); drawDocs(); } }, "전체 해제")),
-      el("p", { class: "small muted" }, state.selectedDocs.size ? `${company.company.name} · 선택한 ${state.selectedDocs.size}개 문서 안에서만 답해요` : `${company.company.name}의 문서 ${docs.length}개만 대상으로 답해요. 다른 기업 문서는 검색하지 않아요.`),
+      el("p", { class: "small muted" }, state.selectedDocs.size ? `${company.company.name} · 회사 자료 질문은 선택한 ${state.selectedDocs.size}개 문서에서 찾아요. 인사·일반 질문도 할 수 있어요.` : `${company.company.name}의 문서 ${docs.length}개만 대상으로 답해요. 다른 기업 문서는 검색하지 않아요.`),
       docs.length === 0 && el("p", { class: "muted small" }, "등록된 문서가 없어요."),
       docs.map((d) => el("label", { class: "doc-item" },
         el("input", { type: "checkbox", checked: state.selectedDocs.has(d.id), disabled: d.status === "pending",
@@ -108,6 +108,7 @@ export async function render() {
     try {
       const result = await api.post("/api/ask", { question: q, document_ids: [...state.selectedDocs], conversation_id: conversationId });
       waiting.replaceWith(botMessage(result));
+      if (result.visualization?.status === "created") toast("시각화 자료 탭에 저장했어요.");
       if (result.conversation_id && result.conversation_id !== conversationId) {
         conversationId = result.conversation_id;
         history.replaceState(null, "", `#/chat/${conversationId}`);  // 새로고침·공유해도 이 대화로 돌아온다(화면은 다시 그리지 않는다)

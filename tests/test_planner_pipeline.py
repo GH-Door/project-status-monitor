@@ -168,10 +168,30 @@ def test_a_both_plan_is_answered_from_documents_only_until_parallel_execution_is
     assert piped.calls["retrieve"] == ["우리 매출 증가율"] and piped.calls["web"] == [] and answer.kind == "document"
 
 
-def test_selecting_documents_skips_the_planner(conn, piped):
+def test_selecting_documents_informs_planner_and_keeps_document_scope(conn, piped, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(rag, "_answer", lambda *args, **kw: seen.update(document_ids=args[5]) or rag.Answer.abstain("자료 없음"))
     answer = _ask(conn, "질문", document_ids=[1])
+    assert piped.calls["plan"][0]["context"].selected_documents == ["002_월간보고.md"]
+    assert seen["document_ids"] == [1] and answer.kind == "document"
 
-    assert piped.calls["plan"] == [] and answer.kind == "document"
+
+@pytest.mark.parametrize("pipeline", ["gates", "planner"])
+def test_greeting_with_selected_document_never_searches_documents(conn, piped, monkeypatch, pipeline):
+    monkeypatch.setattr(rag, "ANSWER_PIPELINE", pipeline)
+    piped.state["plan"] = Plan("direct", answer="안녕하세요!", uses_company_info=False, time_sensitive=False)
+    answer = _ask(conn, "안녕, 오늘도 같이 일해보자!", document_ids=[1])
+    assert answer.kind == "general" and answer.text == "안녕하세요!" and not answer.abstained
+    assert piped.calls["retrieve"] == [] and piped.calls["web"] == []
+
+
+def test_selected_documents_are_still_scoped_when_direct_plan_reports_company_info(conn, piped, monkeypatch):
+    piped.state["plan"] = Plan("direct", answer="자료 없이 만든 수치", uses_company_info=True)
+    seen = {}
+    monkeypatch.setattr(rag, "_answer", lambda *args, **kw: seen.update(document_ids=args[5]) or rag.Answer.abstain("자료 없음"))
+    answer = _ask(conn, "승인 예산은?", document_ids=[1])
+    assert answer.kind == "document" and seen["document_ids"] == [1]
+    assert "자료 없이 만든 수치" not in answer.text
 
 
 def test_with_the_planner_off_the_old_gates_still_run(conn, piped, monkeypatch):

@@ -80,6 +80,10 @@ def get(conn: sqlite3.Connection, conversation_id: int, user_id: int, project_id
             "item_results": json.loads(m["answer_meta_json"]).get("item_results", []),
             "prompt_version": json.loads(m["answer_meta_json"]).get("prompt_version"),
             "web_verification": json.loads(m["answer_meta_json"]).get("web_verification", {}),
+            "visualization": json.loads(m["answer_meta_json"]).get("visualization"),
+            "visualization_source": json.loads(m["answer_meta_json"]).get("visualization_source", {}),
+            "visualization_data": json.loads(m["answer_meta_json"]).get("visualization_data", {}),
+            "calculation": json.loads(m["answer_meta_json"]).get("calculation", {}),
         }
         for m in conn.execute("SELECT * FROM messages WHERE conversation_id = ? ORDER BY id", (conversation_id,))
     ]
@@ -108,12 +112,15 @@ def history(conn: sqlite3.Connection, conversation_id: int) -> list[dict]:
     호출 전에 소유자 확인(get/_owned)을 마친 대화에만 쓴다.
     """
     rows = conn.execute(
-        "SELECT role, content, abstained, abstain_reason, kind, answer_meta_json FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?",
+        "SELECT role, content, abstained, abstain_reason, kind, answer_meta_json FROM messages "
+        "WHERE conversation_id = ? AND kind != 'visualization' ORDER BY id DESC LIMIT ?",
         (conversation_id, HISTORY_MAX_TURNS * 2),
     ).fetchall()
     turns: list[dict] = []
     budget = HISTORY_MAX_CHARS
     for row in rows:  # 최신부터 담는다
+        if row["kind"] == "visualization":
+            continue  # 표현 변경 안내는 다음 사실 검색의 맥락/근거가 아니다.
         content = row["content"]
         meta = json.loads(row["answer_meta_json"])
         if meta.get("item_results"):

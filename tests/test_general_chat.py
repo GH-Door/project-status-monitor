@@ -254,10 +254,14 @@ def test_a_company_question_never_reaches_the_classifier(conn, routed):
     assert answer.kind == "document" and routed.calls["classify"] == [] and routed.calls["general"] == []
 
 
-def test_selecting_documents_means_a_document_question(conn, routed):
+def test_selected_document_greeting_uses_planner_not_forced_document_gate(conn, routed, monkeypatch):
+    from psm import llm_responses
+    from psm.planner import Plan
+    monkeypatch.setattr(llm_responses, "plan_question", lambda *a, **k: (
+        Plan("direct", answer="안녕하세요!"), llm.Usage(1, 1)))
     answer = _ask(conn, QUESTION_GENERAL, document_ids=[1])
-
-    assert answer.kind == "document" and routed.calls["classify"] == []
+    assert answer.kind == "general" and not answer.abstained and not answer.errored
+    assert routed.calls["classify"] == [] and routed.calls["retrieve"] == 0
 
 
 def test_a_document_verdict_from_the_classifier_goes_to_documents(conn, routed):
@@ -586,7 +590,7 @@ def test_document_answers_report_retrieve_time_and_rewrite_time_for_follow_ups(c
     first = _ask(conn, "한결식자재유통의 2026-03 순매출은?")
     follow_up = _ask(conn, "그럼 4월은?", history=_DOCUMENT_HISTORY)
 
-    assert set(first.timings) == {"retrieve"}  # 근거가 없어 유보되면 답변 호출은 없다
+    assert set(first.timings) == {"sales_intent", "retrieve"}  # 의도 판정 후 근거 없음: 답변 생성 호출은 없다
     assert {"rewrite", "classify", "retrieve"} <= set(follow_up.timings)  # 분류에서 문서로 갈라진 시간도 남는다
 
 

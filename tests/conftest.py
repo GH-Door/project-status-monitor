@@ -56,3 +56,12 @@ def _verifier_passes_by_default(monkeypatch, request):
 def _general_chat_off(monkeypatch):
     """일반 질문 기능은 서비스 기본이 켜짐이지만, 테스트는 분류 호출(OpenAI)이 새어 나가지 않게 꺼 두고 필요한 테스트가 직접 켠다."""
     monkeypatch.setattr("psm.rag.GENERAL_CHAT", False)
+
+
+@pytest.fixture(autouse=True)
+def _sales_intent_default_other(monkeypatch):
+    """의도 모델의 네트워크 호출을 격리. 집계 경로 검사는 승인 의도를 명시한다."""
+    from psm import llm, sales_intent
+    monkeypatch.setattr(sales_intent, "interpret", lambda *a: (
+        sales_intent.SalesIntent(operation="other", company=None, customer_or_project=[],
+                                 period_filter=None, additional_requests=[]), llm.Usage(1, 1)))

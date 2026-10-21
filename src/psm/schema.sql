@@ -214,6 +214,18 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(project_id, user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, id);
 
+-- 검증된 답변의 재표현. 원 문서/색인/기존 지표는 수정하지 않는다.
+CREATE TABLE IF NOT EXISTS visualizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+    question TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_visualizations_owner ON visualizations(project_id, user_id, id);
+
 -- 사용자가 대시보드에 보일 지표로 고른 위젯. 프로젝트(scope)별로 순서대로 통째로 저장한다. 행이 없으면 자동 기본값.
 CREATE TABLE IF NOT EXISTS dashboard_widgets (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

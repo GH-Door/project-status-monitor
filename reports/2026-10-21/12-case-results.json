@@ -1,0 +1,787 @@
+{
+  "scope": "same 12 diagnostic cases, one repeat, local before vs after; no application edits",
+  "results": {
+    "before": {
+      "task_passed": 10,
+      "task_total": 12,
+      "correct_supported_items": 9,
+      "supported_item_total": 10,
+      "over_abstained_items": 1,
+      "citation_failure_responses": 1,
+      "partial_record_passed": 0,
+      "partial_record_total": 1,
+      "risk_responses": 0,
+      "unsupported_items_safely_held": 3,
+      "unsupported_item_total": 3,
+      "greeting_passed": 1,
+      "graph_passed": 2,
+      "median_seconds": 4.114,
+      "mean_seconds": 3.33075,
+      "p95_seconds_nearest_rank": 9.348,
+      "six_document_questions_median_seconds": 4.4985,
+      "six_document_questions_mean_seconds": 5.409666666666666,
+      "app_usage_record_count": 11,
+      "app_estimated_krw": 74.72,
+      "usage_tokens_recorded": 0,
+      "cases": {
+        "Q01": {
+          "passed": true,
+          "correct_supported_items": 1,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "현재 승인 예산 68,000,000원. 원문 001의 42행과 일치.",
+          "conversation_id": 193,
+          "latency_seconds": 9.348
+        },
+        "Q02": {
+          "passed": false,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 1,
+          "risk_answer": false,
+          "reason": "자료가 있는데 citation_error로 전부 보류. 필수 필드/인용 구간 연결 검사 실패이며, 저장 응답만으로 실패한 원래 모델 필드를 특정할 수 없음.",
+          "conversation_id": 194,
+          "latency_seconds": 5.606
+        },
+        "Q03": {
+          "passed": true,
+          "correct_supported_items": 1,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "승인 예산 68,000,000원. Q01과 같고 Q02와 보류 여부는 다름.",
+          "conversation_id": 195,
+          "latency_seconds": 4.596
+        },
+        "Q04": {
+          "passed": true,
+          "correct_supported_items": 2,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "예산 68,000,000원과 5월 당시 계획 2026-09-05 모두 정확. 최신 최종 납기로 바꾸지 않음.",
+          "conversation_id": 196,
+          "latency_seconds": 4.401
+        },
+        "Q05": {
+          "passed": true,
+          "correct_supported_items": 1,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "본문은 예산을 답하고 입금액은 확인 불가로 구분. 다만 두 항목을 하나의 supported로 묶고 partial=false로 기록하여 항목별 상태 기록은 실패.",
+          "conversation_id": 197,
+          "latency_seconds": 4.12
+        },
+        "Q06": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "실제 입금액/입금일이 없어 보류. 청구액·전표일을 입금으로 대신 제시하지 않음. 두 항목은 하나로 묶였음.",
+          "conversation_id": 198,
+          "latency_seconds": 4.387
+        },
+        "Q07": {
+          "passed": true,
+          "correct_supported_items": 2,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "6개 원장 처리월별 순공급가액과 감액이 독립 정답과 일치. 범위/VAT/자료 기준일 명시.",
+          "conversation_id": 199,
+          "latency_seconds": 0.848
+        },
+        "Q08": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "월별 선 그래프 생성·저장·재조회 성공. 답변과 독립 정답 모두 일치.",
+          "conversation_id": 199,
+          "latency_seconds": 0.032
+        },
+        "Q09": {
+          "passed": true,
+          "correct_supported_items": 2,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "Q07과 같은 월별 순공급가액/감액/범위. 동일 질문 반복에 같은 답변.",
+          "conversation_id": 200,
+          "latency_seconds": 0.859
+        },
+        "Q10": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "긴 표현으로도 같은 월별 선 그래프 생성·저장. 두 그래프의 값/단위 일치.",
+          "conversation_id": 200,
+          "latency_seconds": 0.025
+        },
+        "Q11": {
+          "passed": false,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "문서를 선택한 상태의 인사를 문서 질문으로 처리해 근거 부족 보류.",
+          "conversation_id": 201,
+          "latency_seconds": 4.108
+        },
+        "Q12": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "문서 미선택 상태에서는 일반 인사 정상.",
+          "conversation_id": 202,
+          "latency_seconds": 1.639
+        }
+      }
+    },
+    "after": {
+      "task_passed": 12,
+      "task_total": 12,
+      "correct_supported_items": 10,
+      "supported_item_total": 10,
+      "over_abstained_items": 0,
+      "citation_failure_responses": 0,
+      "partial_record_passed": 1,
+      "partial_record_total": 1,
+      "risk_responses": 0,
+      "unsupported_items_safely_held": 3,
+      "unsupported_item_total": 3,
+      "greeting_passed": 2,
+      "graph_passed": 2,
+      "median_seconds": 4.398,
+      "mean_seconds": 4.289833333333333,
+      "p95_seconds_nearest_rank": 10.946,
+      "six_document_questions_median_seconds": 6.8614999999999995,
+      "six_document_questions_mean_seconds": 7.5649999999999995,
+      "app_usage_record_count": 18,
+      "app_estimated_krw": 63.43,
+      "usage_tokens_recorded": 0,
+      "cases": {
+        "Q01": {
+          "passed": true,
+          "correct_supported_items": 1,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "현재 승인 예산 68,000,000원과 내부 비용 한도라는 의미가 원문과 일치."
+        },
+        "Q02": {
+          "passed": true,
+          "correct_supported_items": 1,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "기존 citation_error 표현에서도 68,000,000원 제공. 001 원문 42·51행 인용."
+        },
+        "Q03": {
+          "passed": true,
+          "correct_supported_items": 1,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "Q01/Q02와 같은 68,000,000원 및 내부 비용 한도. 세 표현 모두 정상 답변."
+        },
+        "Q04": {
+          "passed": true,
+          "correct_supported_items": 2,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "예산 68,000,000원과 5월 당시 납기 계획 2026-09-05를 별도 supported 항목으로 기록."
+        },
+        "Q05": {
+          "passed": true,
+          "correct_supported_items": 1,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "예산은 답하고 입금액은 미확인으로 구분. supported+missing, partial=true가 저장 후 재조회에도 유지."
+        },
+        "Q06": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "실제 입금 완료액과 완료일을 두 missing 항목으로 구분. 청구액이나 전표일을 입금 사실로 대체하지 않음."
+        },
+        "Q07": {
+          "passed": true,
+          "correct_supported_items": 2,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "6개 원장의 8월/9월 순공급가액과 감액이 독립 정답과 일치. 범위·VAT 조건 유지."
+        },
+        "Q08": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "짧은 후속 표현으로 그래프 생성·저장·재조회. 직전 답변 및 독립 정답과 값 일치."
+        },
+        "Q09": {
+          "passed": true,
+          "correct_supported_items": 2,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "Q07과 같은 월별 수치·감액·범위. 수정 전 답변 본문과도 동일."
+        },
+        "Q10": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "긴 후속 표현도 동일한 월/단위/값의 그래프 생성·저장·재조회 성공."
+        },
+        "Q11": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "문서 선택 상태의 인사를 kind=general로 답변. 근거 부족 보류 없음."
+        },
+        "Q12": {
+          "passed": true,
+          "correct_supported_items": 0,
+          "over_abstained_supported_items": 0,
+          "risk_answer": false,
+          "reason": "문서 미선택 인사도 일반 대화. Q11과 답변 본문 동일."
+        }
+      }
+    }
+  },
+  "checks": {
+    "persistence": {
+      "Q01": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q02": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q03": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q04": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q05": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q06": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q07": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q08": {
+        "evidence": true,
+        "kind": true,
+        "abstained": true,
+        "answer": true
+      },
+      "Q09": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q10": {
+        "evidence": true,
+        "kind": true,
+        "abstained": true,
+        "answer": true
+      },
+      "Q11": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      },
+      "Q12": {
+        "partial": true,
+        "reason_code": true,
+        "item_results": true,
+        "evidence": true,
+        "prompt_version": true,
+        "kind": true,
+        "abstained": true,
+        "abstain_reason": true,
+        "answer": true
+      }
+    },
+    "quotes": {
+      "Q01": [
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l51",
+          "exact": true
+        }
+      ],
+      "Q02": [
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l51",
+          "exact": true
+        }
+      ],
+      "Q03": [
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l51",
+          "exact": true
+        }
+      ],
+      "Q04": [
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l60",
+          "exact": true
+        }
+      ],
+      "Q05": [
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l49",
+          "exact": true
+        },
+        {
+          "asset_id": 2783,
+          "span_id": "a2783:l74",
+          "exact": true
+        }
+      ],
+      "Q06": [],
+      "Q07": [
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l42",
+          "exact": true
+        }
+      ],
+      "Q08": [],
+      "Q09": [
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l40",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2786,
+          "span_id": "a2786:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2798,
+          "span_id": "a2798:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2810,
+          "span_id": "a2810:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2822,
+          "span_id": "a2822:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2834,
+          "span_id": "a2834:l42",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l38",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l41",
+          "exact": true
+        },
+        {
+          "asset_id": 2846,
+          "span_id": "a2846:l42",
+          "exact": true
+        }
+      ],
+      "Q10": [],
+      "Q11": [],
+      "Q12": []
+    },
+    "charts": {
+      "Q08": {
+        "created": true,
+        "graph_kind": true,
+        "unit": true,
+        "oracle_values": true,
+        "oracle_rows": true,
+        "answer_rows": true,
+        "quotes_in_answer": true,
+        "source_answer": true,
+        "parent_conversation": true,
+        "before_after_same_answer": true
+      },
+      "Q10": {
+        "created": true,
+        "graph_kind": true,
+        "unit": true,
+        "oracle_values": true,
+        "oracle_rows": true,
+        "answer_rows": true,
+        "quotes_in_answer": true,
+        "source_answer": true,
+        "parent_conversation": true,
+        "before_after_same_answer": true
+      }
+    },
+    "compound_status": {
+      "Q04_two_supported": true,
+      "Q05_partial": true,
+      "Q06_two_missing": true
+    }
+  },
+  "preservation": {
+    "source_documents_unchanged": true,
+    "source_count": 1000,
+    "app_code_unchanged": true,
+    "local_document_and_metric_tables_unchanged": true,
+    "team_unchanged": true
+  }
+}

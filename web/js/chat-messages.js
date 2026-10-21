@@ -45,6 +45,17 @@ function itemMessages(result) {
 // result: { answer, abstained, errored, kind, abstain_reason, evidence }. 재작성된 질문(rewritten_query)은 서버가 검색·평가에 쓰고 화면에는 보이지 않는다
 // 종류 셋: 문서 근거가 있는 답 / 문서에서 못 찾음 / 일반 답변(문서 근거 없음). 일반 답변은 글자 배지로 구분한다(색만으로 알리지 않는다).
 export function botMessage(result) {
+  const node = answerMessage(result);
+  if (result.visualization) {
+    const v = result.visualization;
+    node.append(el("div", { class: "visualization-notice" },
+      result.kind !== "visualization" && el("p", {}, v.message),
+      v.status === "created" && el("a", { class: "btn primary", href: `#/visualizations/${v.id}` }, "시각화 자료 보기")));
+  }
+  return node;
+}
+
+function answerMessage(result) {
   if (result.errored) {
     return hold("답변을 불러오지 못했어요", result.abstain_reason || "잠시 뒤에 다시 시도해 주세요.", "연결 상태를 확인한 뒤 다시 시도해 주세요. 자료가 없다고 판단한 것은 아니에요.");
   }
@@ -89,6 +100,7 @@ export const skeletonMessage = () => el("div", { class: "msg bot skeleton", "ari
 
 export const emptyThread = (generalChat = false) => el("div", { class: "thread-empty" },
   el("h2", {}, "무엇이 궁금하세요?"),
+  el("p", { class: "muted" }, "답변을 받은 뒤 ‘이 내용을 그래프로 보여줘’ 또는 ‘표로 정리해줘’라고 요청하면 ‘시각화 자료’ 탭에 저장해요."),
   el("p", { class: "muted" }, generalChat
     ? "회사 문서에 대한 질문은 근거와 함께 답하고, 문서와 상관없는 질문은 '일반 답변'으로, 날씨처럼 지금의 정보는 '웹 검색'으로 도와드려요. 이어서 \"그건 언제야?\"처럼 물어도 앞 대화를 이어서 찾아요."
     : "문서에 근거가 있는 내용만 답해요. 이어서 \"그건 언제야?\"처럼 물어도 앞 대화를 이어서 찾아요."));

@@ -334,3 +334,29 @@ dialog::backdrop { background: #1c1c1c66; }
 
 .company-picker { display: grid; gap: 8px; margin: 0 0 18px; font-size: 12px; }
 .company-picker select { width: 100%; min-width: 0; padding: 8px; border: 1px solid #d7dbe2; border-radius: 8px; background: white; color: #222; }
+/* 문답에서 만든 자료. 기존 현황 대시보드의 보드/지표와 독립된 화면이다. */
+.visualization-page { min-width: 0; }
+.visual-intro { padding: 24px; }
+.visual-intro p { margin: 10px 0; line-height: 1.7; }
+.visual-intro .btn { margin-top: 8px; }
+.visual-card { padding: 24px; min-width: 0; }
+.visual-focused { outline: 2px solid #2563eb; outline-offset: 2px; }
+.visual-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.visual-card-head .row { flex-wrap: wrap; }
+.visual-card h2 { margin-top: 0; }
+.visual-card select { max-width: 180px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; }
+.visual-graphic, .visual-table-scroll { max-width: 100%; overflow: auto; margin: 18px 0; }
+.visual-graphic svg { display: block; max-width: none; }
+.visual-table { width: 100%; border-collapse: collapse; white-space: normal; font-size: 14px; }
+.visual-table caption { text-align: left; padding: 10px 0; font-weight: 600; }
+.visual-table th, .visual-table td { text-align: left; border-bottom: 1px solid #e2e8f0; padding: 12px; min-width: 100px; vertical-align: top; }
+.visual-table th { background: #f1f5f9; }
+.visual-note { padding: 12px 16px; background: #eff6ff; border-left: 3px solid #2563eb; white-space: pre-wrap; }
+.visual-sources { margin: 16px 0; }
+.visualization-notice { margin-top: 16px; padding-top: 12px; border-top: 1px solid #e2e8f0; }
+.visual-steps { list-style: none; padding: 8px; display: flex; gap: 20px; min-width: 400px; flex-wrap: wrap; }
+.visual-steps li { display: flex; gap: 12px; padding: 16px; border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; max-width: 350px; }
+.visual-steps.timeline { flex-direction: column; border-left: 3px solid #2563eb; margin-left: 15px; }
+.visual-steps.timeline li { max-width: none; }
+.visual-step-index { background: #2563eb; color: white; border-radius: 50%; padding: 4px 9px; align-self: flex-start; }
+.visual-steps p { margin: 0 0 8px; overflow-wrap: anywhere; }

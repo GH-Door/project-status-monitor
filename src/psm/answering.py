@@ -26,7 +26,7 @@ _WEB_FAILED = "웹 검색에 실패했어요. 잠시 뒤에 다시 시도해 주
 _WEB_NO_SOURCE = "웹에서 근거로 삼을 출처를 확인하지 못했어요"
 
 
-def company_context(conn: sqlite3.Connection, project_id: int) -> CompanyContext:
+def company_context(conn: sqlite3.Connection, project_id: int, document_ids: list[int] | None = None) -> CompanyContext:
     """계획 호출에 참고용으로 줄 회사 정보: 이름, 고객사, 이 회사 문서가 다루는 주제(중요한 지표·표 이름부터)."""
     name = conn.execute("SELECT name FROM projects WHERE id = ?", (project_id,)).fetchone()["name"]
     labels = [r[0] for r in conn.execute(
@@ -35,13 +35,16 @@ def company_context(conn: sqlite3.Connection, project_id: int) -> CompanyContext
     seen: dict[str, str] = {}
     for label in labels:
         seen.setdefault(rag._squash(label), label.strip())
-    return CompanyContext(name=name, customers=rag.company_vocabulary(conn, project_id)[1], topics=list(seen.values())[:_TOPICS_MAX])
+    selected = [r["filename"] for r in conn.execute("SELECT id, filename FROM documents WHERE project_id=?", (project_id,))
+                if r["id"] in (document_ids or [])]
+    return CompanyContext(name=name, customers=rag.company_vocabulary(conn, project_id)[1],
+                          topics=list(seen.values())[:_TOPICS_MAX], selected_documents=selected)
 
 
-def _plan(conn: sqlite3.Connection, project_id: int, question: str, history: list[dict]) -> Plan | None:
-    context = company_context(conn, project_id)
+def _plan(conn: sqlite3.Connection, project_id: int, question: str, history: list[dict], document_ids: list[int] | None = None) -> Plan | None:
+    context = company_context(conn, project_id, document_ids)
     estimated = llm.estimate_cost_krw(
-        ANSWER_MODEL, input_chars=len(question) + sum(len(t["content"]) for t in history) + _INSTRUCTIONS_CHARS + sum(map(len, context.topics)),
+        ANSWER_MODEL, input_chars=len(question) + sum(len(t["content"]) for t in history) + _INSTRUCTIONS_CHARS + sum(map(len, context.topics + context.selected_documents)),
         expected_output_tokens=GENERAL_MAX_OUTPUT_TOKENS)
     return rag._reserved_call(conn, project_id, estimated, lambda: llm_responses.plan_question(question, history, context),
                               "계획 호출 실패 — 오류로 처리")
@@ -52,13 +55,14 @@ def _web(conn: sqlite3.Connection, project_id: int, query: str, timings: dict[st
 
 
 def answer(
-    conn: sqlite3.Connection, user_id: int, project_id: int, dataset_id: str, question: str, history: list[dict] | None
+    conn: sqlite3.Connection, user_id: int, project_id: int, dataset_id: str, question: str, history: list[dict] | None,
+    document_ids: list[int] | None = None,
 ) -> rag.Answer:
-    """문서를 직접 고르지 않은 질문을 계획 호출로 처리한다."""
+    """팀원 방식처럼 선택 문서가 있어도 질문 유형을 판정하고, 문서 검색 범위는 유지한다."""
     turns = history or []
     timings: dict[str, float] = {}
     with rag._stage(timings, "plan"):
-        plan = _plan(conn, project_id, question, turns)
+        plan = _plan(conn, project_id, question, turns, document_ids)
     if plan is None:
         return replace(rag.Answer.abstain(_PLAN_FAILED, errored=True), timings=timings)
 
@@ -77,5 +81,5 @@ def answer(
     # ponytail: 문서+웹 복합("both")은 아직 문서 쪽만 답한다. 병렬 실행·종합 호출은 채택 판단 뒤 보강으로 추가(계획서 2절)
     if plan.action == "both":
         logger.warning("project=%s 문서+웹 복합 질문 — 아직 문서 경로만 실행", project_id)
-    result = rag._answer(conn, user_id, project_id, dataset_id, question, None, turns, timings, search_query=plan.query)
+    result = rag._answer(conn, user_id, project_id, dataset_id, question, document_ids, turns, timings, search_query=plan.query)
     return replace(result, rewritten_query=plan.query, timings=timings)

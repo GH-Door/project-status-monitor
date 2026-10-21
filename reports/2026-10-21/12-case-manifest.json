@@ -1,0 +1,202 @@
+{
+  "evaluation_date": "2026-10-21",
+  "company": "라온공간워크스",
+  "model": "gpt-4.1-mini",
+  "prompt_version": "ko-item-evidence-v6-fixed-slots-20261021",
+  "request_count": 12,
+  "questions": [
+    {
+      "id": "Q01",
+      "question": "현재 승인 예산은 얼마야 ?",
+      "category": "budget_paraphrase",
+      "selected_document": "001_사업계획_라이트.md",
+      "follow": null,
+      "expected": {
+        "budget_krw": 68000000,
+        "meaning": "현재 승인된 내부 비용 한도. 판매/청구/입금액 아님."
+      }
+    },
+    {
+      "id": "Q02",
+      "question": "승인된 예산에 대해서 알려줘",
+      "category": "budget_paraphrase",
+      "selected_document": "001_사업계획_라이트.md",
+      "follow": null,
+      "expected": {
+        "budget_krw": 68000000,
+        "meaning": "현재 승인된 내부 비용 한도. 판매/청구/입금액 아님."
+      }
+    },
+    {
+      "id": "Q03",
+      "question": "승인 예산은 얼마야?",
+      "category": "budget_paraphrase",
+      "selected_document": "001_사업계획_라이트.md",
+      "follow": null,
+      "expected": {
+        "budget_krw": 68000000,
+        "meaning": "현재 승인된 내부 비용 한도. 판매/청구/입금액 아님."
+      }
+    },
+    {
+      "id": "Q04",
+      "question": "이 사업계획서의 승인 예산과 5월 승인 당시 납기 계획을 알려줘.",
+      "category": "two_supported_items",
+      "selected_document": "001_사업계획_라이트.md",
+      "follow": null,
+      "expected": {
+        "budget_krw": 68000000,
+        "meaning": "5월 당시 계획이며 이후 변경을 반영한 최신 최종 납기와 구분",
+        "may_approved_delivery_plan": "2026-09-05"
+      }
+    },
+    {
+      "id": "Q05",
+      "question": "승인 예산과 실제 입금액은 각각 얼마야?",
+      "category": "partial",
+      "selected_document": "001_사업계획_라이트.md",
+      "follow": null,
+      "expected": {
+        "budget_krw": 68000000,
+        "meaning": "현재 승인된 내부 비용 한도. 판매/청구/입금액 아님.",
+        "actual_receipt": "not_in_selected_document",
+        "policy": "68,000,000원은 답하고 입금액은 확인 불가를 구분"
+      }
+    },
+    {
+      "id": "Q06",
+      "question": "이 원장 기준으로 실제 입금 완료액과 입금 완료일을 알려줘.",
+      "category": "unsupported",
+      "selected_document": "004_매출정산원장_라이트.md",
+      "follow": null,
+      "expected": {
+        "receipt_amount": "not_in_selected_document",
+        "receipt_date": "not_in_selected_document",
+        "policy": "청구 합계 98,540,200원/전표 처리일/문서 승인일을 입금액/입금일로 대체하지 않음. 0원이나 미입금으로 단정하지 않음."
+      }
+    },
+    {
+      "id": "Q07",
+      "question": "우리 회사 최근 매출 추이에 대해서 알려줘",
+      "category": "sales",
+      "selected_document": null,
+      "follow": null,
+      "expected": {
+        "monthly": {
+          "2026-08": {
+            "gross": 308508000,
+            "deduction": 0,
+            "net": 308508000
+          },
+          "2026-09": {
+            "gross": 226239200,
+            "deduction": 29172000,
+            "net": 197067200
+          }
+        },
+        "meaning": "현재 승인된 6개 계약 원장의 전표 처리월별 VAT 제외 순공급가액. 감액은 처리월에서 한 번 차감. 회사 전체 회계상 인식 매출/실제 입금액으로 단정 금지."
+      }
+    },
+    {
+      "id": "Q08",
+      "question": "이 내용을 그래프로 보여줘",
+      "category": "chart_short",
+      "selected_document": null,
+      "follow": "Q07",
+      "expected": {
+        "monthly_values": [
+          [
+            "2026-08",
+            308508000
+          ],
+          [
+            "2026-09",
+            197067200
+          ]
+        ],
+        "policy": "직전 답변 수치와 독립 원장 정답 모두 일치하는 월별 그래프. 응답과 저장 확인."
+      }
+    },
+    {
+      "id": "Q09",
+      "question": "우리 회사 최근 매출 추이에 대해서 알려줘",
+      "category": "sales_repeat",
+      "selected_document": null,
+      "follow": null,
+      "expected": {
+        "monthly": {
+          "2026-08": {
+            "gross": 308508000,
+            "deduction": 0,
+            "net": 308508000
+          },
+          "2026-09": {
+            "gross": 226239200,
+            "deduction": 29172000,
+            "net": 197067200
+          }
+        },
+        "meaning": "현재 승인된 6개 계약 원장의 전표 처리월별 VAT 제외 순공급가액. 감액은 처리월에서 한 번 차감. 회사 전체 회계상 인식 매출/실제 입금액으로 단정 금지."
+      }
+    },
+    {
+      "id": "Q10",
+      "question": "이 내용을 토대로 시각화 자료를 만들어주는데 그래프로 만들어줄 수 있을까?",
+      "category": "chart_long",
+      "selected_document": null,
+      "follow": "Q09",
+      "expected": {
+        "monthly_values": [
+          [
+            "2026-08",
+            308508000
+          ],
+          [
+            "2026-09",
+            197067200
+          ]
+        ],
+        "policy": "Q08과 같은 월별 데이터/범위. 선 그래프 외 적절한 그래프도 허용."
+      }
+    },
+    {
+      "id": "Q11",
+      "question": "안녕, 오늘도 같이 일해보자!",
+      "category": "greeting_selected",
+      "selected_document": "001_사업계획_라이트.md",
+      "follow": null,
+      "expected": {
+        "policy": "자연스러운 인사/도움 제안. 문서 근거 부족으로 보류하거나 사내 사실을 지어내지 않음."
+      }
+    },
+    {
+      "id": "Q12",
+      "question": "안녕, 오늘도 같이 일해보자!",
+      "category": "greeting_unselected",
+      "selected_document": null,
+      "follow": null,
+      "expected": {
+        "policy": "Q11과 같은 인사 기준. 선택 문서가 없는 새 대화."
+      }
+    }
+  ],
+  "rubric": {
+    "manual_task_success": "12건 각각 모든 요구 항목/자료 범위/필수 조건을 충족해야 통과. 오답, 과잉 보류, 자료 없는 단정, 그래프 불일치, 일반 인사 실패는 실패.",
+    "supported_item_accuracy": "Q01~03 예산 각1, Q04 예산+당시납기 2, Q05 예산1, Q07/Q09 8월+9월 각2 = 총10개. 수치와 의미/범위 함께 판정.",
+    "over_abstention": "위 10개 답변 가능한 항목 중 근거 부족/보류 등으로 실제 답을 제공하지 못한 항목 수 /10. 오답과 구별.",
+    "unsupported_items": "Q05 실제입금액1 + Q06 입금액/입금일2 =3개. 확인 불가 및 범위 제한을 명확히 표시해야 통과.",
+    "risk_response_rate": "잘못되거나 주어진 근거가 뒷받침하지 않는 사실을 확정한 응답 수 / 전체12건. 잘못된 범위의 수치를 요청 항목의 답으로 제시한 경우 포함. 단순 보류는 위험 답변이 아님.",
+    "chart_success": "Q08,Q10 각각 직전 답변 일치, 독립 정답 일치, 저장/재조회 성공을 별도 기록. 월별 그래프를 실제 생성해야 최종 통과.",
+    "latency": "클라이언트 POST /api/ask 대기시간. 파일 저장/GET 재조회 제외. 12개 중앙값과 nearest-rank p95; 단일 실행으로 일반화 금지.",
+    "cost": "api_usage는 앱의 가격표 기반 추정이며 청구서 아님. API 요청 24건과 내부 모델 호출 수는 다름. token NULL은 미기록."
+  },
+  "extra_checks": [
+    "citation_error response count / 12; also document questions / 8",
+    "Q04 independent supported slots; Q05 supported+missing and partial=true",
+    "Q06 independent missing slots and abstained=true",
+    "GET conversation preserves partial/item_results/reason_code and exact quotes",
+    "All restored source quotes match referenced original asset lines"
+  ],
+  "scope": "Same local questions, no code changes, no ask retries or paid LLM grader. Q08/Q10 follow parent; all others fresh.",
+  "local_ids_note": "Resolve selected documents by company and filename; local DB IDs and API credentials are not included."
+}

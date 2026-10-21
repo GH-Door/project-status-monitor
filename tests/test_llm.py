@@ -91,6 +91,12 @@ def test_status_reports_unconfigured_when_no_key_anywhere(monkeypatch):
     assert llm.api_key_status() == {"configured": False, "source": None, "last4": None}
 
 
+@pytest.fixture(autouse=True)
+def _plain_transport_tests(monkeypatch):
+    """Transport and legacy resolver tests; test_answer_contract covers the new two-stage API."""
+    monkeypatch.setattr(llm, "ITEM_CHECK", False)
+
+
 class _CapturingClient:
     """chat.completions.parse 호출 인자만 붙잡는 가짜 OpenAI 클라이언트."""
 
@@ -282,17 +288,9 @@ def test_answer_gives_up_when_even_the_larger_limit_cuts_the_output(monkeypatch)
 
 # --- 항목별 판정 + 출처/인용문을 서버에서 대조한다. 가짜 응답이며 모델 성능 평가는 아니다. ---
 
-def _checked_client(monkeypatch, items):
-    from types import SimpleNamespace
-
-    parsed = llm.CheckedAnswerResult(items=items)
-    client = _CapturingClient()
-    client.parse = lambda **kwargs: (setattr(client, "kwargs", kwargs), SimpleNamespace(
-        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
-        choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed))]))[1]
-    monkeypatch.setattr(llm, "_client", lambda: client)
-    monkeypatch.setattr(llm, "ITEM_CHECK", True)
-    return client
+def _checked_result(items):
+    """Legacy asset/span resolver; the new API contract has separate integration tests."""
+    return llm.CheckedAnswerResult(items=items)
 
 
 def _item(**fields):
@@ -330,56 +328,49 @@ def test_item_check_can_be_disabled_for_a_comparison_using_the_plain_schema(monk
 
 
 def test_when_the_asked_and_found_items_differ_the_answer_is_forced_to_abstain(monkeypatch):
-    client = _checked_client(monkeypatch, [_item(asked="입금액", status="mismatch",
+    parsed = _checked_result([_item(asked="입금액", status="mismatch",
         reason="청구 합계만 확인됩니다. 입금 내역이 필요합니다.")])
 
-    result, _usage = llm.answer("입금액은?", [], [], {})
+    result = parsed.to_answer([])
 
-    assert client.kwargs["response_format"] is llm.CheckedAnswerResult
+    assert isinstance(parsed, llm.CheckedAnswerResult)
     assert result.abstain is True and result.cited_asset_ids == []
     assert "입금액" in result.abstain_reason and "청구 합계" in result.abstain_reason  # 왜 유보했는지 두 항목이 보인다
 
 
 def test_when_the_item_and_source_quote_match_the_answer_is_released(monkeypatch):
-    _checked_client(monkeypatch, [_item()])
+    parsed = _checked_result([_item()])
 
-    result, _usage = llm.answer("청구 합계는?", [_evidence()], [], {})
+    result = parsed.to_answer([_evidence()])
 
     assert result.abstain is False and result.answer.startswith("청구 합계는") and result.cited_asset_ids == [1]
 
 
-def test_the_check_rules_are_added_to_the_prompt_when_enabled(monkeypatch):
-    client = _checked_client(monkeypatch, [_item()])
-
-    llm.answer("질문", [], [], {})
-
-    system = client.kwargs["messages"][0]["content"]
-    assert system.startswith(llm.ANSWER_SYSTEM_PROMPT) and "items" in system and "span_ids" in system
-    assert "abstain=true" not in system  # 존재하지 않는 출력 필드를 요구하지 않는다
+  # 존재하지 않는 출력 필드를 요구하지 않는다
 
 
 def test_a_missing_item_keeps_its_specific_reason(monkeypatch):
-    _checked_client(monkeypatch, [_item(status="missing", reason="입금 기록이 필요합니다.", answer="")])
+    parsed = _checked_result([_item(status="missing", reason="입금 기록이 필요합니다.", answer="")])
 
-    result, _usage = llm.answer("질문", [], [], {})
+    result = parsed.to_answer([])
 
     assert result.abstain and "입금 기록이 필요합니다." in result.abstain_reason
 
 
 @pytest.mark.parametrize("field", ["asked", "found", "answer"])
 def test_an_empty_item_check_does_not_release_an_answer_even_if_supported(monkeypatch, field):
-    _checked_client(monkeypatch, [_item(**{field: "  "})])
+    parsed = _checked_result([_item(**{field: "  "})])
 
-    result, _usage = llm.answer("입금액은?", [_evidence()], [], {})
+    result = parsed.to_answer([_evidence()])
 
     assert result.abstain and result.answer == "" and result.cited_asset_ids == []
 
 
 def test_partial_match_releases_supported_answer_and_keeps_missing_item_reason(monkeypatch):
-    _checked_client(monkeypatch, [_item(), _item(asked="제외 범위", status="missing",
+    parsed = _checked_result([_item(), _item(asked="제외 범위", status="missing",
         reason="계약에서 제외한 작업은 확인되지 않습니다. 계약 범위 자료가 필요합니다.")])
 
-    result, _usage = llm.answer("청구 합계와 제외 범위는?", [_evidence()], [], {})
+    result = parsed.to_answer([_evidence()])
 
     assert not result.abstain and result.partial and result.evidence_quote
     assert "청구 합계는 98,540,200원입니다." in result.answer
@@ -387,10 +378,10 @@ def test_partial_match_releases_supported_answer_and_keeps_missing_item_reason(m
 
 
 def test_abstention_drops_stray_answer_and_citations(monkeypatch):
-    _checked_client(monkeypatch, [_item(status="conflict", answer="지원되지 않는 값",
+    parsed = _checked_result([_item(status="conflict", answer="지원되지 않는 값",
         reason="서로 다른 입금액이 기록되어 승인 내역이 필요합니다.")])
 
-    result, _usage = llm.answer("입금액은?", [], [], {})
+    result = parsed.to_answer([])
 
     assert result.abstain and result.answer == "" and result.cited_asset_ids == []
     assert result.evidence_quote == "" and "승인 내역이 필요합니다" in result.abstain_reason
@@ -405,45 +396,45 @@ def test_abstention_drops_stray_answer_and_citations(monkeypatch):
     [{"asset_id": 1, "span_ids": ["a2:l1"]}],
 ])
 def test_missing_fabricated_or_unprovided_sources_block_the_answer(monkeypatch, sources):
-    _checked_client(monkeypatch, [_item(sources=sources)])
-    result, _ = llm.answer("청구 합계는?", [_evidence()], [], {})
+    parsed = _checked_result([_item(sources=sources)])
+    result = parsed.to_answer([_evidence()])
     assert result.abstain and not result.answer and not result.cited_asset_ids and not result.evidence_quote
     assert result.reason_code == "citation_error"
 
 
 def test_a_span_from_another_document_cannot_validate_the_cited_document(monkeypatch):
-    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 2, "span_ids": ["a1:l1"]}])])
-    result, _ = llm.answer("청구 합계는?", [_evidence(), _evidence(2, "입금 내역 없음")], [], {})
+    parsed = _checked_result([_item(sources=[{"asset_id": 2, "span_ids": ["a1:l1"]}])])
+    result = parsed.to_answer([_evidence(), _evidence(2, "입금 내역 없음")])
     assert result.abstain and result.reason_code == "citation_error"
 
 
 def test_valid_items_are_composed_in_question_order_with_deduplicated_citations(monkeypatch):
     items = [_item(), _item(asked="확인 오류 건수", found="확인 오류 0건", answer="확인 오류는 0건입니다.",
         sources=[{"asset_id": 1, "span_ids": ["a1:l2"]}])]
-    _checked_client(monkeypatch, items)
-    result, _ = llm.answer("청구 합계와 오류 건수는?", [_evidence(text="청구 합계는 98,540,200원\n확인 오류 0건")], [], {})
+    parsed = _checked_result(items)
+    result = parsed.to_answer([_evidence(text="청구 합계는 98,540,200원\n확인 오류 0건")])
     assert not result.abstain and result.cited_asset_ids == [1]
     assert result.answer == "청구 합계는 98,540,200원입니다.\n확인 오류는 0건입니다."
     assert "확인 오류 0건" in result.evidence_quote
 
 
 def test_table_headers_and_rows_can_be_separate_exact_spans(monkeypatch):
-    _checked_client(monkeypatch, [_item(sources=[{"asset_id": 1, "span_ids": ["a1:l1", "a1:l3", "a1:l5"]}])])
-    result, _ = llm.answer("청구 합계는?", [_evidence(text="회사: 예시회사\n\n항목 | 금액\n--- | ---\n청구 합계 | 98,540,200원")], [], {})
+    parsed = _checked_result([_item(sources=[{"asset_id": 1, "span_ids": ["a1:l1", "a1:l3", "a1:l5"]}])])
+    result = parsed.to_answer([_evidence(text="회사: 예시회사\n\n항목 | 금액\n--- | ---\n청구 합계 | 98,540,200원")])
     assert not result.abstain
 
 
 def test_server_quotes_preserve_unicode_and_original_whitespace(monkeypatch):
     import unicodedata
-    _checked_client(monkeypatch, [_item()])
+    parsed = _checked_result([_item()])
     text = unicodedata.normalize("NFD", "청구 합계는\r\n  98,540,200원")
-    result, _ = llm.answer("청구 합계는?", [_evidence(text=text)], [], {})
+    result = parsed.to_answer([_evidence(text=text)])
     assert not result.abstain
 
 
 def test_empty_item_list_cannot_release_a_vacuously_valid_answer(monkeypatch):
-    _checked_client(monkeypatch, [])
-    result, _ = llm.answer("질문", [_evidence()], [], {})
+    parsed = _checked_result([])
+    result = parsed.to_answer([_evidence()])
     assert result.abstain
 
 

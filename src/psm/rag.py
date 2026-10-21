@@ -17,7 +17,17 @@ from pathlib import Path
 
 import httpx
 
-from psm import budget, dify, index_reuse, ingest, llm
+from psm import (
+    budget,
+    dify,
+    index_reuse,
+    ingest,
+    library,
+    llm,
+    retrieval_support,
+    sales_intent,
+    sales_summary,
+)
 from psm.auth import require_project_access
 from psm.config import (
     ANSWER_CONTEXT_DOCS,
@@ -74,6 +84,8 @@ class Answer:
     reason_code: str | None = None
     item_results: list[dict] = field(default_factory=list)
     web_verification: dict = field(default_factory=dict)
+    visualization_data: dict = field(default_factory=dict)
+    calculation: dict = field(default_factory=dict)
 
     @classmethod
     def abstain(cls, reason: str, errored: bool = False, *, reason_code: str | None = None) -> Answer:
@@ -236,7 +248,14 @@ def retrieve_evidence(
     if DOC_TYPE_ROUTING:
         doc_types = _candidate_doc_types(conn, project_id, hits)
         preferred_type = _route_doc_type(conn, project_id, question, doc_types) if len(doc_types) > 1 else None
-    evidence = _verified_unique_evidence(conn, project_id, hits, document_ids or None, preferred_type)[:limit]
+    evidence = _verified_unique_evidence(conn, project_id, hits, document_ids or None, preferred_type)
+    # 말투에 따라 사업계획의 반복 문구가 상위를 차지해 매출 원장이 전부 빠지는 경우를 보완한다.
+    # 일반 검색 근거도 남겨 조건/정책/다른 질문 항목을 함께 확인한다.
+    financial = retrieval_support.sales_documents(conn, project_id, question, document_ids or None, max(1, limit - 2))
+    if financial:
+        financial_ids = {item.asset_id for item in financial}
+        evidence = financial + [item for item in evidence if item.asset_id not in financial_ids]
+    evidence = evidence[:limit]
     logger.info(
         "project=%s 검색결과=%d건 → 검증후근거=%d건", project_id, len(hits), len(evidence)
     )
@@ -478,18 +497,18 @@ def answer_question(
     # 클라이언트가 보낸 project_id·역할을 그대로 신뢰하지 않는다 — 서버가 매번 재확인한다(§6).
     require_project_access(conn, user_id, project_id, action="read")
 
-    if ANSWER_PIPELINE == "planner" and GENERAL_CHAT and not document_ids:  # 계획 호출 하나가 재작성·분류를 대신한다
+    if GENERAL_CHAT and (ANSWER_PIPELINE == "planner" or document_ids):  # 선택 문서가 있어도 인사·일반 질문을 먼저 구분한다
         # 순환 import를 피하려고 여기서 불러온다(answering이 이 모듈을 쓴다)
         from psm.answering import answer as answer_with_planner
 
-        return answer_with_planner(conn, user_id, project_id, dataset_id, question, history)
+        return answer_with_planner(conn, user_id, project_id, dataset_id, question, history, document_ids or None)
     timings: dict[str, float] = {}
     if history:
         with _stage(timings, "rewrite"):
             search_query = rewrite_query(conn, project_id, question, history)
     else:
         search_query = None
-    if GENERAL_CHAT and not document_ids:  # 문서를 골랐으면 문서 질문이다
+    if GENERAL_CHAT and not document_ids:  # 선택 문서가 없는 gates 경로는 기존 분류를 유지한다
         general = _general_answer(conn, project_id, question, history, search_query, timings)
         if general is not None:
             return replace(general, rewritten_query=search_query)
@@ -510,38 +529,73 @@ def _answer(
     search_query: str | None = None,
 ) -> Answer:
     timings = {} if timings is None else timings
-    try:
-        with _stage(timings, "retrieve"):
-            evidence = retrieve_evidence(conn, project_id, dataset_id, search_query or question, document_ids, limit=ANSWER_CONTEXT_DOCS)
-    except (dify.DifyError, httpx.HTTPError):
-        # 접속 실패와 검색 결과 0건은 구분한다. 원격 오류 본문에는 비밀값이 있을 수 있어 기록하지 않는다.
-        logger.warning("project=%s 자료 검색 서비스를 불러오지 못했습니다", project_id)
-        return Answer.abstain("자료 검색 서비스를 불러오지 못해 답변하지 못했습니다. 자료 부족 여부는 확인되지 않았습니다.",
-                              errored=True, reason_code="retrieval_error")
+    calculated = None
+    calculation = {}
+    query = search_query or question
+    if sales_intent.candidate(query):
+        company = re.sub(r"^\d+_", "", conn.execute("SELECT name FROM projects WHERE id=?", (project_id,)).fetchone()["name"])
+        with _stage(timings, "sales_intent"):
+            plan = _reserved_call(
+                conn, project_id,
+                llm.estimate_cost_krw(ANSWER_MODEL, input_chars=len(query) + len(company) + len(sales_intent.SYSTEM),
+                                      expected_output_tokens=sales_intent.MAX_TOKENS),
+                lambda: sales_intent.interpret(query, company), "매출 집계 의도 확인 실패")
+        if plan is None:
+            return Answer.abstain("매출 집계 요청을 해석하는 서비스를 불러오지 못했습니다. 잠시 뒤 다시 요청해 주세요.",
+                                  errored=True, reason_code="calculation_intent_error")
+        # 기본 화면 이름은 실제 타 기업명이 아니다. '우리 회사'는 현재 선택을 가리킨다.
+        names = [re.sub(r"^\d+_", "", r["name"]) for r in conn.execute("SELECT name FROM projects")
+                 if r["name"] != library.DEFAULT_COMPANY_NAME]
+        _, _, customers = _vocabulary_parts(conn, project_id)
+        # 재작성 과정에서 원 질문의 고객/기간 조건이 빠져도 전체 회사 합계로 바꾸지 않는다.
+        if (sales_intent.permits(plan, query, company, names + customers)
+                and sales_intent.permits(plan, question, company, names + customers)):
+            evidence = retrieval_support.financial_documents(conn, project_id, query, document_ids)
+            calculated = sales_summary.calculate(evidence)
+            if calculated is None:
+                return Answer.abstain("선택한 자료에서 검증 가능한 월별 전표 집계를 만들지 못했습니다. "
+                                      "현재 승인 원장·단위·계약 중복·전표 산식을 확인해야 합니다.",
+                                      reason_code="calculation_unavailable")
+            calculation = {"version": sales_intent.VERSION, "intent": plan.model_dump(),
+                           "asset_ids": [e.asset_id for e in evidence], "source": "indexed_current_ledger"}
+    if calculated is None:
+        try:
+            with _stage(timings, "retrieve"):
+                evidence = retrieve_evidence(conn, project_id, dataset_id, query, document_ids, limit=ANSWER_CONTEXT_DOCS)
+        except (dify.DifyError, httpx.HTTPError):
+            # 접속 실패와 검색 결과 0건은 구분한다. 원격 오류 본문에는 비밀값이 있을 수 있어 기록하지 않는다.
+            logger.warning("project=%s 자료 검색 서비스를 불러오지 못했습니다", project_id)
+            return Answer.abstain("자료 검색 서비스를 불러오지 못해 답변하지 못했습니다. 자료 부족 여부는 확인되지 않았습니다.",
+                                  errored=True, reason_code="retrieval_error")
     if not evidence:
         logger.warning("project=%s 답변 유보: 근거 없음", project_id)
         return Answer.abstain("현재 검색된 자료에서 질문에 답할 근거를 찾지 못했습니다", reason_code="retrieval_empty")
 
     images = [e.image_path for e in evidence if e.is_visual][:MAX_IMAGES_PER_ANSWER]
     model_evidence = _with_full_text(conn, evidence)  # 화면에 돌려주는 근거(evidence)는 짧은 조각 그대로 둔다
-    estimated = llm.estimate_cost_krw(
-        ANSWER_MODEL,
-        input_chars=sum(len(e.content) for e in model_evidence) + sum(len(t["content"]) for t in history or []),
-        num_images=len(images),
-        expected_output_tokens=llm.answer_output_limit(),
-    )
-    reservation_id = budget.reserve(conn, "answer", estimated, project_id=project_id)
-    try:
-        with _stage(timings, "answer"):
-            result, usage = llm.answer(
-                question, model_evidence, images, _official_values(conn, project_id), history=history
-            )
-    except Exception:
-        budget.cancel(conn, reservation_id)
-        logger.exception("project=%s 답변 생성 실패", project_id)
-        return Answer.abstain("답변 생성 중 오류가 발생했습니다", errored=True)
-    actual = llm.actual_cost_krw(ANSWER_MODEL, usage.prompt_tokens, usage.completion_tokens)
-    budget.settle(conn, reservation_id, actual)  # §10 — 예약은 추정치, 정산은 실제 usage
+    visualization_data = {}
+    if calculated is not None:
+        result, visualization_data = calculated
+    else:
+        estimated = llm.estimate_cost_krw(
+            ANSWER_MODEL,
+            input_chars=sum(len(e.content) for e in model_evidence) + 2 * (len(question) + sum(len(t["content"]) for t in history or []))
+                        + len(llm.ANSWER_SYSTEM_PROMPT) + (len(llm.PLAN_SYSTEM) + 1200 if llm.ITEM_CHECK else 0),
+            num_images=len(images),
+            expected_output_tokens=llm.answer_output_limit() + (llm.PLAN_MAX_TOKENS if llm.ITEM_CHECK else 0),
+        )
+        reservation_id = budget.reserve(conn, "answer", estimated, project_id=project_id)
+        try:
+            with _stage(timings, "answer"):
+                result, usage = llm.answer(
+                    question, model_evidence, images, _official_values(conn, project_id), history=history
+                )
+        except Exception:
+            budget.cancel(conn, reservation_id)
+            logger.exception("project=%s 답변 생성 실패", project_id)
+            return Answer.abstain("답변 생성 중 오류가 발생했습니다", errored=True)
+        actual = llm.actual_cost_krw(ANSWER_MODEL, usage.prompt_tokens, usage.completion_tokens)
+        budget.settle(conn, reservation_id, actual)  # §10 — 예약은 추정치, 정산은 실제 usage
 
     require_project_access(conn, user_id, project_id, action="read")
     item_results = [item.model_dump() for item in getattr(result, "item_results", [])]
@@ -574,4 +628,5 @@ def _answer(
                     quotes.setdefault(source["asset_id"], []).extend(source["quotes"])
         cited = [replace(e, content="\n".join(dict.fromkeys(quotes[e.asset_id]))) for e in cited if e.asset_id in quotes]
     return Answer(text=result.answer, evidence=cited, abstained=False, abstain_reason=result.abstain_reason,
-                  partial=getattr(result, "partial", False), reason_code=reason_code, item_results=item_results)
+                  partial=getattr(result, "partial", False), reason_code=reason_code, item_results=item_results,
+                  visualization_data=visualization_data, calculation=calculation)

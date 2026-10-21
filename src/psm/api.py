@@ -39,6 +39,7 @@ from psm import (
     metrics,
     overview,
     rag,
+    visualizations,
 )
 from psm.auth import AccessDeniedError, demo_user_id, require_project_access
 from psm.config import (
@@ -422,9 +423,32 @@ def ask(body: AskBody) -> dict:
             if not set(body.document_ids).issubset(owned):
                 raise HTTPException(422, "선택한 기업에 속하지 않는 문서가 포함되어 있습니다")
         prior = None
+        saved = None
         if body.conversation_id is not None:
-            conversations.get(conn, body.conversation_id, user_id, project["id"])  # 소유자·사업 확인
+            saved = conversations.get(conn, body.conversation_id, user_id, project["id"])  # 소유자·사업 확인
             prior = conversations.history(conn, body.conversation_id)
+        visual_requested = visualizations.requested(body.question)
+        if visual_requested and visualizations.follows_answer(body.question):
+            previous = visualizations.previous_answer(saved["messages"]) if saved else {}
+            cid = body.conversation_id or conversations.create(conn, project["id"], user_id, body.question)
+            selection_changed = False
+            if body.document_ids:
+                allowed_assets = {row["id"] for row in conn.execute(
+                    "SELECT id, document_id FROM assets WHERE project_id=?", (project["id"],))
+                    if row["document_id"] in body.document_ids}
+                selected_sources = [source.get("asset_id") for item in previous.get("item_results", [])
+                                    if item.get("status") == "supported" for source in item.get("sources", [])]
+                selection_changed = bool(selected_sources and not set(selected_sources).issubset(allowed_assets))
+            if selection_changed:
+                outcome = {"status": "unavailable", "message": "이전 답변의 출처가 현재 선택한 문서 범위와 다릅니다. 선택한 문서로 먼저 질문한 뒤 시각화를 요청해 주세요."}
+                previous = {}
+            else:
+                outcome = visualizations.create(conn, user_id, project["id"], cid, body.question, previous)
+            conversations.add_message(conn, cid, "user", body.question, kind="visualization")
+            conversations.add_message(conn, cid, "assistant", outcome["message"], kind="visualization",
+                                      answer_meta={"visualization": outcome, "visualization_source": previous})
+            return {"answer": outcome["message"], "kind": "visualization", "abstained": False,
+                    "errored": False, "evidence": [], "conversation_id": cid, "visualization": outcome}
         answer = rag.answer_question(
             conn, user_id, project["id"], project["dify_dataset_id"], body.question,
             body.document_ids or None, history=prior,
@@ -435,6 +459,14 @@ def ask(body: AskBody) -> dict:
             for rendered, original in zip(evidence, answer.evidence):
                 rendered["content"] = original.content
         conversation_id = None if answer.errored else _save_turn(conn, user_id, project["id"], body, answer, evidence)
+        visualization = None
+        if visual_requested and conversation_id:
+            source = {"answer": answer.text, "abstained": answer.abstained, "kind": answer.kind,
+                      "partial": answer.partial, "item_results": answer.item_results, "evidence": evidence,
+                      "visualization_data": answer.visualization_data}
+            visualization = visualizations.create(conn, user_id, project["id"], conversation_id, body.question, source)
+            conversations.add_message(conn, conversation_id, "assistant", visualization["message"], kind="visualization",
+                                      answer_meta={"visualization": visualization, "visualization_source": source})
     return {
         "answer": answer.text,
         "abstained": answer.abstained,
@@ -449,6 +481,9 @@ def ask(body: AskBody) -> dict:
         "item_results": answer.item_results,
         "prompt_version": answer.web_verification.get("version", llm.ANSWER_PROMPT_VERSION),
         "web_verification": answer.web_verification,
+        "visualization_data": answer.visualization_data,
+        "calculation": answer.calculation,
+        "visualization": visualization,
     }
 
 
@@ -462,7 +497,9 @@ def _save_turn(conn: sqlite3.Connection, user_id: int, project_id: int, body: As
         answer_meta={"partial": answer.partial, "reason_code": answer.reason_code,
                      "item_results": answer.item_results,
                      "prompt_version": answer.web_verification.get("version", llm.ANSWER_PROMPT_VERSION),
-                     "web_verification": answer.web_verification},
+                     "web_verification": answer.web_verification,
+                     "visualization_data": answer.visualization_data,
+                     "calculation": answer.calculation},
     )
     return conversation_id
 
@@ -483,6 +520,24 @@ def get_conversation(conversation_id: int) -> dict:
 def delete_conversation(conversation_id: int) -> dict:
     with _db() as (conn, user_id):
         conversations.delete(conn, conversation_id, user_id, _company(conn, user_id)["id"])
+    return {"ok": True}
+
+
+@app.get("/api/visualizations")
+def list_visualizations() -> list[dict]:
+    with _db() as (conn, user_id):
+        return visualizations.list_for(conn, user_id, _company(conn, user_id)["id"])
+
+
+@app.delete("/api/visualizations/{visualization_id}")
+def delete_visualization(visualization_id: int) -> dict:
+    with _db() as (conn, user_id):
+        project_id = _company(conn, user_id)["id"]
+        cursor = conn.execute("DELETE FROM visualizations WHERE id=? AND user_id=? AND project_id=?",
+                              (visualization_id, user_id, project_id))
+        if not cursor.rowcount:
+            raise HTTPException(404, "시각화 자료를 찾을 수 없습니다")
+        conn.commit()
     return {"ok": True}
 
 
